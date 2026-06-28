@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, createCheckout, getCart, checkoutCart } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,8 @@ import { toast } from "sonner";
 import { ArrowLeft, Loader2, ShoppingCart, Check } from "lucide-react";
 
 interface LocationState {
-  orderIds: string[];
+  orderIds?: string[];
+  fromCart?: boolean;
   expressDelivery?: boolean;
   selectedSupplierId?: string;
 }
@@ -35,16 +36,37 @@ const Address = () => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!state.orderIds || state.orderIds.length === 0) {
-      toast.error("No orders to checkout");
-      navigate("/order-summary");
-      return;
-    }
+    const loadFromCart = async () => {
+      try {
+        const cart = await getCart();
+        if (!cart.items.length) {
+          toast.error("Your cart is empty");
+          navigate("/order-summary");
+          return;
+        }
+        // Normalise cart items into the display shape used below.
+        setDraftOrders(
+          cart.items.map((i) => ({
+            id: i.id,
+            design: { designUrl: i.design?.designUrl },
+            quantity: i.quantity,
+            wristbandType: i.design?.wristbandType,
+            totalPrice: i.lineTotal,
+            currency: i.currency,
+          })),
+        );
+      } catch {
+        toast.error("Failed to load cart");
+        navigate("/order-summary");
+      } finally {
+        setLoadingOrders(false);
+      }
+    };
 
-    const loadOrders = async () => {
+    const loadLegacyOrders = async () => {
       try {
         const all: any[] = await apiFetch("/orders/mine");
-        const relevant = (all || []).filter(o => state.orderIds.includes(o.id));
+        const relevant = (all || []).filter((o) => state.orderIds!.includes(o.id));
         setDraftOrders(relevant);
       } catch {
         toast.error("Failed to load orders");
@@ -53,7 +75,16 @@ const Address = () => {
         setLoadingOrders(false);
       }
     };
-    loadOrders();
+
+    if (state.fromCart) {
+      loadFromCart();
+    } else if (state.orderIds && state.orderIds.length > 0) {
+      loadLegacyOrders();
+    } else {
+      // Default to the cart.
+      loadFromCart();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -69,30 +100,38 @@ const Address = () => {
     setLoading(true);
     try {
       const expressValue = state.expressDelivery ? 19 : 0;
+      const extraCharges = expressValue ? { express: expressValue } : undefined;
+      const addr = { ...shippingAddress, notes: customizationNotes || undefined };
 
-      for (const order of draftOrders) {
-        const existingExtras = order.extraCharges && typeof order.extraCharges === "object" ? order.extraCharges : {};
-        const newExtras = { ...existingExtras, express: expressValue };
-        const newTotal = (order.totalPrice || 0) + expressValue;
-
-        await apiFetch(`/orders/${order.id}/status`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            status: "PLACED",
-            paymentStatus: "pending",
-            shippingAddress,
-            extraCharges: newExtras,
-            totalPrice: newTotal,
-            note: customizationNotes || undefined,
-          }),
-        });
+      let orderIds: string[];
+      if (state.orderIds && state.orderIds.length > 0 && !state.fromCart) {
+        // Legacy path: existing DRAFT orders.
+        for (const order of draftOrders) {
+          await apiFetch(`/orders/${order.id}/status`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              status: "PLACED",
+              paymentStatus: "pending",
+              shippingAddress: addr,
+              extraCharges,
+              note: customizationNotes || undefined,
+            }),
+          });
+        }
+        orderIds = state.orderIds;
+      } else {
+        // Cart path: server creates PLACED, server-priced orders and empties the cart.
+        const res = await checkoutCart(addr, extraCharges);
+        orderIds = res.orderIds;
       }
 
-      toast.success("Address saved. Redirecting to payment confirmation...");
-      navigate(`/payment-success?order_id=${state.orderIds[0]}`);
+      if (!orderIds.length) throw new Error("No orders to pay for");
+      toast.success("Address saved. Redirecting to secure payment…");
+      const { url } = await createCheckout(orderIds);
+      if (!url) throw new Error("Could not start checkout");
+      window.location.href = url; // hand off to Stripe Checkout
     } catch (error: any) {
       toast.error(error.message || "An error occurred while processing your order");
-    } finally {
       setLoading(false);
     }
   };

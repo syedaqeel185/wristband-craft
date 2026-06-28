@@ -3,12 +3,9 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { RegisterDto, LoginDto, VerifyEmailDto } from './auth.dto';
-import { Resend } from 'resend';
 
 @Injectable()
 export class AuthService {
-  private resend = new Resend(process.env.RESEND_API_KEY);
-
   constructor(private prisma: PrismaService, private jwtService: JwtService) {}
 
   async register(dto: RegisterDto, role: 'user' | 'supplier' = 'user') {

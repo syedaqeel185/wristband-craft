@@ -1,7 +1,12 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EmailService } from '../email/email.service';
+import { PricingService } from '../pricing/pricing.service';
 import { BulkOrderUpdateDto, CreateOrderDto, UpdateOrderStatusDto, UpdateShipmentDto } from './orders.dto';
+
+const CONFIRM_PURPOSE = 'confirm-production';
 
 const ORDER_STATUS = {
   DRAFT: 'DRAFT',
@@ -25,10 +30,96 @@ const ALLOWED_TRANSITIONS: Record<string, string[]> = {
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+    private readonly email: EmailService,
+    private readonly pricing: PricingService,
+  ) {}
+
+  /** Signed, time-limited token embedded in the "confirm your order" email link. */
+  buildProductionConfirmToken(orderId: string): string {
+    return this.jwtService.sign({ orderId, purpose: CONFIRM_PURPOSE });
+  }
+
+  /**
+   * Customer-facing: confirm an order (from the email link) to start production.
+   * ACCEPTED (paid) -> IN_PRODUCTION. Token-authenticated, so no login required.
+   */
+  async confirmProduction(token: string) {
+    let payload: { orderId?: string; purpose?: string };
+    try {
+      payload = this.jwtService.verify(token);
+    } catch {
+      throw new BadRequestException('This confirmation link is invalid or has expired');
+    }
+    if (payload.purpose !== CONFIRM_PURPOSE || !payload.orderId) {
+      throw new BadRequestException('Invalid confirmation link');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: payload.orderId },
+      include: {
+        user: { select: { email: true, fullName: true } },
+        supplier: { select: { contactEmail: true, companyName: true } },
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const current = this.normalizeStatus(order.status);
+    if (current === ORDER_STATUS.IN_PRODUCTION || current === ORDER_STATUS.SHIPPED || current === ORDER_STATUS.DELIVERED) {
+      return { alreadyConfirmed: true, status: current };
+    }
+    if (current !== ORDER_STATUS.ACCEPTED) {
+      throw new BadRequestException(
+        'This order is not ready to confirm. Make sure payment has completed first.',
+      );
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: order.id },
+      data: { status: ORDER_STATUS.IN_PRODUCTION },
+    });
+    await this.prisma.orderStatusHistory.create({
+      data: {
+        orderId: order.id,
+        fromStatus: order.status,
+        toStatus: ORDER_STATUS.IN_PRODUCTION,
+        note: 'Customer confirmed — production started',
+        updatedByUserId: order.userId,
+      },
+    });
+
+    const info = { id: order.id, quantity: order.quantity, totalPrice: order.totalPrice, currency: order.currency };
+    if (order.user?.email) {
+      await this.email.productionStarted(order.user.email, order.user.fullName, info);
+    }
+    if (order.supplier?.contactEmail) {
+      await this.email.supplierOrderConfirmed(order.supplier.contactEmail, order.supplier.companyName, info);
+    }
+    return { confirmed: true, status: ORDER_STATUS.IN_PRODUCTION, orderId: updated.id };
+  }
 
   private normalizeStatus(status?: string): string {
     return (status || '').trim().toUpperCase();
+  }
+
+  private safeParseObject(s?: string | null): Record<string, any> {
+    if (!s) return {};
+    try {
+      const v = JSON.parse(s);
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Map the studio's print type (+ saved meta) to the pricing engine's enum. */
+  private mapPrintType(printType?: string, meta?: Record<string, any>): 'none' | 'black' | 'color' {
+    const p = printType || meta?.printType;
+    if (p === 'full_color' || p === 'color') return 'color';
+    if (p === 'black') return 'black';
+    return 'none';
   }
 
   private validateTransition(fromStatus: string, toStatus: string) {
@@ -49,6 +140,7 @@ export class OrdersService {
     const { customizationNotes, userId: _uid, shippingAddress, extraCharges } = createOrderDto;
     const designId = createOrderDto.designId?.trim() || undefined;
     const supplierId = createOrderDto.supplierId?.trim() || undefined;
+    const productId = createOrderDto.productId?.trim() || undefined;
 
     if (designId) {
       const design = await this.prisma.design.findFirst({ where: { id: designId, userId } });
@@ -63,8 +155,35 @@ export class OrdersService {
       }
     }
 
-    if (!Number.isFinite(createOrderDto.quantity) || !Number.isFinite(createOrderDto.totalPrice)) {
-      throw new BadRequestException('Order quantity and total must be valid numbers');
+    if (!Number.isFinite(createOrderDto.quantity)) {
+      throw new BadRequestException('Order quantity must be a valid number');
+    }
+
+    // Pricing integrity: when an order is tied to a product, the SERVER computes
+    // the authoritative price from PricingService — never trust the client total.
+    let totalPrice = createOrderDto.totalPrice;
+    let unitPrice = createOrderDto.unitPrice;
+    let basePrice = createOrderDto.basePrice;
+    let pricingSnapshot: unknown = extraCharges ?? {};
+    if (productId) {
+      const meta = this.safeParseObject(customizationNotes);
+      const quote = await this.pricing.quote({
+        productId,
+        quantity: Math.round(createOrderDto.quantity),
+        currency: (createOrderDto.currency as 'USD' | 'EUR' | 'GBP') || 'EUR',
+        printType: this.mapPrintType(createOrderDto.printType, meta),
+        qrEnabled: meta.hasQrCode === true || createOrderDto.hasSecureGuests === true,
+        trademarkEnabled: meta.hasTrademark === true,
+        hasCustomDesign:
+          meta.hasPrint === true || (!!createOrderDto.printType && createOrderDto.printType !== 'none'),
+        hasLogo: meta.hasLogo === true,
+      });
+      totalPrice = quote.total;
+      unitPrice = quote.unitPrice;
+      basePrice = quote.components.find((c) => c.code === 'base')?.unitAmount ?? quote.unitPrice;
+      pricingSnapshot = quote;
+    } else if (!Number.isFinite(totalPrice)) {
+      throw new BadRequestException('Order total must be a valid number');
     }
 
     const initialStatus = this.normalizeStatus(createOrderDto.status) || ORDER_STATUS.PLACED;
@@ -79,10 +198,11 @@ export class OrdersService {
           userId,
           designId,
           supplierId,
+          productId,
           quantity: Math.round(createOrderDto.quantity),
-          totalPrice: createOrderDto.totalPrice,
-          unitPrice: createOrderDto.unitPrice ?? undefined,
-          basePrice: createOrderDto.basePrice ?? undefined,
+          totalPrice,
+          unitPrice: unitPrice ?? undefined,
+          basePrice: basePrice ?? undefined,
           status: initialStatus,
           paymentStatus: createOrderDto.paymentStatus,
           currency: createOrderDto.currency,
@@ -92,8 +212,7 @@ export class OrdersService {
           customizationNotes: customizationNotes ?? undefined,
           shippingAddress: shippingAddress ? JSON.stringify(shippingAddress) : undefined,
           extraCharges: extraCharges != null ? JSON.stringify(extraCharges) : undefined,
-          pricingSnapshotJson:
-            extraCharges != null ? JSON.stringify(extraCharges) : JSON.stringify({}),
+          pricingSnapshotJson: JSON.stringify(pricingSnapshot),
           designSnapshotJson: JSON.stringify({ designId }),
           createdAt: new Date(),
         },
@@ -148,7 +267,10 @@ export class OrdersService {
     if (user.roles.includes('supplier')) {
       const supplier = await this.prisma.supplier.findUnique({ where: { userId: user.id } });
       if (!supplier) return [];
-      const allOrders = await this.prisma.order.findMany({
+      // A supplier only ever sees PLACED+ orders routed to their company
+      // (DRAFTs are customers' unsubmitted carts).
+      const orders = await this.prisma.order.findMany({
+        where: { supplierId: supplier.id, status: { not: ORDER_STATUS.DRAFT } },
         orderBy: { createdAt: 'desc' },
         include: {
           user: { select: { email: true, fullName: true } },
@@ -156,24 +278,13 @@ export class OrdersService {
           design: true,
         },
       });
-      return allOrders.map((order) => {
-        const parsed = {
-          ...order,
-          shippingAddress: order.shippingAddress ? JSON.parse(order.shippingAddress) : null,
-          extraCharges: order.extraCharges ? JSON.parse(order.extraCharges) : null,
-        };
-        if (order.supplierId === supplier.id) {
-          return { ...parsed, canManage: true, visibility: 'fulfillment' as const };
-        }
-        return {
-          ...parsed,
-          canManage: false,
-          visibility: 'platform' as const,
-          user: { email: '—', fullName: null as string | null },
-          shippingAddress: null,
-          customizationNotes: null,
-        };
-      });
+      return orders.map((order) => ({
+        ...order,
+        shippingAddress: order.shippingAddress ? JSON.parse(order.shippingAddress) : null,
+        extraCharges: order.extraCharges ? JSON.parse(order.extraCharges) : null,
+        canManage: true,
+        visibility: 'fulfillment' as const,
+      }));
     }
 
     return this.findByUser(user.id);
@@ -246,7 +357,35 @@ export class OrdersService {
       },
     });
 
+    // Notify the customer on the key status transitions.
+    if (nextStatus === ORDER_STATUS.ACCEPTED) {
+      await this.notifyCustomer(order.userId, 'accepted', updatedOrder);
+    } else if (nextStatus === ORDER_STATUS.IN_PRODUCTION) {
+      await this.notifyCustomer(order.userId, 'production', updatedOrder);
+    } else if (nextStatus === ORDER_STATUS.DELIVERED) {
+      await this.notifyCustomer(order.userId, 'delivered', updatedOrder);
+    }
+
     return updatedOrder;
+  }
+
+  /** Load the customer and send a lifecycle email (best-effort). */
+  private async notifyCustomer(
+    userId: string,
+    kind: 'accepted' | 'production' | 'delivered' | 'shipped',
+    order: { id: string; quantity: number; totalPrice: number; currency: string | null },
+    shipment?: { courier?: string | null; trackingNumber?: string | null; trackingUrl?: string | null; estimatedDelivery?: Date | null },
+  ) {
+    const u = await this.prisma.profile.findUnique({
+      where: { id: userId },
+      select: { email: true, fullName: true },
+    });
+    if (!u?.email) return;
+    const info = { id: order.id, quantity: order.quantity, totalPrice: order.totalPrice, currency: order.currency };
+    if (kind === 'delivered') await this.email.orderDelivered(u.email, u.fullName, info);
+    else if (kind === 'accepted') await this.email.orderAccepted(u.email, u.fullName, info);
+    else if (kind === 'production') await this.email.productionStarted(u.email, u.fullName, info);
+    else await this.email.orderShipped(u.email, u.fullName, info, shipment || {});
   }
 
   async updateShipment(id: string, dto: UpdateShipmentDto, user: { id: string; roles: string[] }) {
@@ -297,6 +436,15 @@ export class OrdersService {
         updatedByUserId: user.id,
       },
     });
+
+    if (nextStatus === ORDER_STATUS.SHIPPED) {
+      await this.notifyCustomer(order.userId, 'shipped', updatedOrder, {
+        courier: updatedOrder.courier,
+        trackingNumber: updatedOrder.trackingNumber,
+        trackingUrl: updatedOrder.trackingUrl,
+        estimatedDelivery: updatedOrder.estimatedDelivery,
+      });
+    }
 
     return updatedOrder;
   }

@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class SupplierRegisterDto {
   @IsString()
@@ -18,4 +18,16 @@ export class SupplierRegisterDto {
   @IsString()
   @MinLength(6)
   password: string;
+}
+
+export class CreateReviewDto {
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rating: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  comment?: string;
 }

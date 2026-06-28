@@ -7,11 +7,13 @@ import { Palette, Zap, ShieldCheck, ArrowRight, LogOut } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { getCurrentUser } from "@/lib/session";
+import { SuppliersShowcase } from "@/components/SuppliersShowcase";
 
 const Index = () => {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
   const [userName, setUserName] = useState<string>("");
+  const [isSupplier, setIsSupplier] = useState(false);
 
   useEffect(() => {
     checkUser();
@@ -22,6 +24,7 @@ const Index = () => {
     if (!currentUser) return;
 
     setUser(currentUser);
+    setIsSupplier(!!currentUser.roles?.includes("supplier"));
     const supplier = await apiFetch("/suppliers/me").catch(() => null);
     if (supplier?.companyName) {
       setUserName(supplier.companyName);
@@ -162,6 +165,9 @@ const Index = () => {
             </Card>
           </div>
         </section>
+
+        {/* Suppliers directory — shown to customers & visitors, hidden for signed-in suppliers */}
+        {!isSupplier && <SuppliersShowcase />}
 
         {/* CTA */}
         <section className="container mx-auto px-4 py-20 text-center">

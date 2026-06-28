@@ -26,4 +26,8 @@ export class CreateDesignDto {
   @IsOptional()
   @IsString()
   canvasJson?: string;
+
+  @IsOptional()
+  @IsString()
+  metaJson?: string;
 }

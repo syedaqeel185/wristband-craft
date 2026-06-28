@@ -1,21 +1,24 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { clearToken } from "@/lib/api";
+import { clearToken, getCart } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import { Palette, FileImage, Package, LogOut } from "lucide-react";
+import { Palette, FileImage, Package, LogOut, ShoppingCart } from "lucide-react";
+import { DashboardSuppliers } from "@/components/DashboardSuppliers";
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const [userEmail, setUserEmail] = useState("");
+  const [cartCount, setCartCount] = useState(0);
 
   useEffect(() => {
     const getUser = async () => {
       const user = await getCurrentUser();
       if (user) {
         setUserEmail(user.email || "");
+        getCart().then((c) => setCartCount(c.count)).catch(() => {});
       } else {
         navigate("/auth");
       }
@@ -38,6 +41,15 @@ const Dashboard = () => {
           </h1>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{userEmail}</span>
+            <Button variant="outline" size="sm" className="relative" onClick={() => navigate("/order-summary")}>
+              <ShoppingCart className="h-4 w-4 mr-2" />
+              Cart
+              {cartCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center">
+                  {cartCount}
+                </span>
+              )}
+            </Button>
             <Button variant="ghost" size="sm" onClick={handleLogout}>
               <LogOut className="h-4 w-4 mr-2" />
               Logout
@@ -94,6 +106,8 @@ const Dashboard = () => {
             </CardContent>
           </Card>
         </div>
+
+        <DashboardSuppliers />
       </main>
     </div>
   );

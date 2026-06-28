@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getQuote, addToCart, type PriceQuote, type PrintType as QuotePrintType } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,12 +19,31 @@ type Currency = "EUR" | "USD" | "GBP";
 type WristbandType = "silicone" | "fabric" | "vinyl" | "tyvek";
 type PrintType = "none" | "black" | "full_color";
 
+// Real wristband proportions: 255mm x 25mm (~10.2 : 1). Rendered 1:1 (no scaling
+// of the band itself) so the studio scrolls horizontally at the true size.
+const BAND_W = 1200;
+const BAND_H = Math.round((BAND_W * 25) / 255); // 118
+const DIECUT_PAD = 8; // px padding for the top/bottom die-cut lines
+
 const CANVAS_DIMS: Record<WristbandType, { width: number; height: number }> = {
-  tyvek:    { width: 1200, height: 100 },
-  vinyl:    { width: 1200, height: 100 },
-  fabric:   { width: 1200, height: 150 },
-  silicone: { width: 1200, height: 200 },
+  tyvek: { width: BAND_W, height: BAND_H },
+  vinyl: { width: BAND_W, height: BAND_H },
+  fabric: { width: BAND_W, height: BAND_H },
+  silicone: { width: BAND_W, height: BAND_H },
 };
+
+// Left -> right: [QR] [5px] [vertical trademark] [print area].
+// No borders/lines between QR and trademark — they share the left area.
+function bandLayout(w: number, h: number) {
+  const qrSize = Math.max(48, h - 16);
+  const qrLeft = 8;
+  const qrRight = qrLeft + qrSize;
+  const tmW = Math.max(22, Math.round(h * 0.18));
+  const tmX = qrRight + 5; // trademark begins exactly 5px after the QR
+  const designLeft = tmX + tmW + 6;
+  const designRight = w - 10;
+  return { qrSize, qrLeft, qrRight, tmW, tmX, designLeft, designRight };
+}
 
 const TYVEK_COLORS = [
   { name: "White", value: "#FFFFFF" },
@@ -47,42 +66,50 @@ const TYVEK_COLORS = [
   { name: "Violet", value: "#8B00FF" },
 ];
 
-interface PricingData {
-  basePrice: number;
-  extraCharges: { print?: number; trademark?: number; qrCode?: number };
-  unitPrice: number;
-  totalPrice: number;
-  minQuantity: number;
-}
-
 interface SavedTemplate {
   id: string;
   designUrl: string;
   wristbandColor: string;
   wristbandType: string;
   createdAt: string;
-  canvasJson?: string;
-  customText?: string;
-  textColor?: string;
+  canvasJson?: string | null;
+  metaJson?: string | null;
+  customText?: string | null;
+  textColor?: string | null;
 }
 
-interface PricingConfig {
-  id?: string;
-  wristbandType: string;
-  minQuantity: number;
-  basePriceUsd: number;
-  basePriceEur: number;
-  basePriceGbp: number;
-  blackPrintExtraUsd: number;
-  blackPrintExtraEur: number;
-  blackPrintExtraGbp: number;
-  fullColorPrintExtraUsd: number;
-  fullColorPrintExtraEur: number;
-  fullColorPrintExtraGbp: number;
-  secureGuestsExtraUsd: number;
-  secureGuestsExtraEur: number;
+interface DesignMetaSnapshot {
+  quantity: number;
+  currency: Currency;
+  wristbandType: WristbandType;
+  wristbandColor: string;
+  printType: PrintType;
+  hasPrint: boolean;
+  hasQrCode: boolean;
+  hasTrademark: boolean;
+  trademarkText: string;
+  trademarkTextColor: "white" | "black";
+  tmFont?: string;
+  tmBold?: boolean;
+  tmItalic?: boolean;
+  supplierId: string;
+  productId: string;
+  pricing: { unitPrice: number; total: number };
 }
 
+const SYMBOL: Record<Currency, string> = { EUR: "€", USD: "$", GBP: "£" };
+
+const FONT_OPTIONS = [
+  "Arial",
+  "Helvetica",
+  "Georgia",
+  "Times New Roman",
+  "Courier New",
+  "Verdana",
+  "Trebuchet MS",
+  "Impact",
+  "Comic Sans MS",
+];
 
 const dataUrlToFile = async (dataUrl: string, filename: string): Promise<File> => {
   const response = await fetch(dataUrl);
@@ -113,9 +140,7 @@ const uploadDesignImage = async (dataUrl: string): Promise<string> => {
     const detail = Array.isArray(m) ? m.join(", ") : m || raw || `Upload failed (${response.status})`;
     throw new Error(detail);
   }
-  if (!data.url) {
-    throw new Error("Upload did not return an image URL");
-  }
+  if (!data.url) throw new Error("Upload did not return an image URL");
   return data.url;
 };
 
@@ -123,10 +148,9 @@ const DesignStudio = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const editDesignState = (location.state as any)?.editDesign;
-  const editIndex = (location.state as any)?.editIndex; // Track which design we're editing
-  
+
   const canvasContainerRef = useRef<HTMLDivElement>(null);
-  const isLoadingTemplateRef = useRef(false);
+  const isRestoringRef = useRef(false);
   const [fabricCanvas, setFabricCanvas] = useState<FabricCanvas | null>(null);
   const [uploadedImage, setUploadedImage] = useState<FabricImage | null>(null);
   const [customText, setCustomText] = useState("");
@@ -136,96 +160,215 @@ const DesignStudio = () => {
   const [currency] = useState<Currency>("EUR");
   const [printType, setPrintType] = useState<PrintType>("none");
   const [hasTrademark, setHasTrademark] = useState(false);
-   const [hasPrint, setHasPrint] = useState(false);
+  const [hasPrint, setHasPrint] = useState(false);
   const [hasQrCode, setHasQrCode] = useState(false);
   const [trademarkText, setTrademarkText] = useState("");
   const [trademarkTextColor, setTrademarkTextColor] = useState<"white" | "black">("black");
-  const [pricing, setPricing] = useState<PricingData | null>(null);
+  // Custom-text style (defaults for new text; also applied live to selected text)
+  const [textFont, setTextFont] = useState("Arial");
+  const [textSize, setTextSize] = useState(36);
+  const [textColor, setTextColor] = useState("#000000");
+  const [textBold, setTextBold] = useState(true);
+  const [textItalic, setTextItalic] = useState(false);
+  // Trademark text style
+  const [tmFont, setTmFont] = useState("Arial");
+  const [tmBold, setTmBold] = useState(false);
+  const [tmItalic, setTmItalic] = useState(false);
+  const [quote, setQuote] = useState<PriceQuote | null>(null);
   const [loadingPrice, setLoadingPrice] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedTemplates, setSavedTemplates] = useState<SavedTemplate[]>([]);
-  const [trademarkTextObj, setTrademarkTextObj] = useState<IText | null>(null);
-  const [qrPlaceholder, setQrPlaceholder] = useState<FabricImage | null>(null);
 
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>("");
-  const [supplierConfigs, setSupplierConfigs] = useState<PricingConfig[]>([]);
   const [supplierProducts, setSupplierProducts] = useState<any[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>("");
 
+  const selectedProduct = supplierProducts.find((p) => p.id === selectedProductId);
+  const minQty: number = selectedProduct?.minOrderQuantity || 1;
+  const maxQty: number | undefined = selectedProduct?.maxOrderQuantity || undefined;
+
+  const designClip = useCallback((canvas: FabricCanvas) => {
+    const L = bandLayout(canvas.getWidth(), canvas.getHeight());
+    return new Rect({
+      left: L.designLeft,
+      top: 4,
+      width: L.designRight - L.designLeft,
+      height: canvas.getHeight() - 8,
+      absolutePositioned: true,
+    });
+  }, []);
+
+  // ---- Structural rendering (zones, perforation, QR, trademark) ----
+  // Structural objects are tagged with `zone` and are NEVER persisted; they are
+  // always rebuilt from state. This keeps saved designs to user content only and
+  // avoids the duplicate-element bugs that come from reloading structure.
+  const rebuildStructure = useCallback(
+    async (
+      canvas: FabricCanvas,
+      overrides?: {
+        hasQrCode?: boolean;
+        hasTrademark?: boolean;
+        trademarkText?: string;
+        trademarkTextColor?: "white" | "black";
+        tmFont?: string;
+        tmBold?: boolean;
+        tmItalic?: boolean;
+      },
+    ) => {
+      // Use explicit overrides when provided (restore path, where state setters
+      // haven't applied yet); otherwise fall back to current state.
+      const qrOn = overrides?.hasQrCode ?? hasQrCode;
+      const tmOn = overrides?.hasTrademark ?? hasTrademark;
+      const tmText = overrides?.trademarkText ?? trademarkText;
+      const tmColor = overrides?.trademarkTextColor ?? trademarkTextColor;
+      const tmFontFamily = overrides?.tmFont ?? tmFont;
+      const tmIsBold = overrides?.tmBold ?? tmBold;
+      const tmIsItalic = overrides?.tmItalic ?? tmItalic;
+      const w = canvas.getWidth();
+      const h = canvas.getHeight();
+      const L = bandLayout(w, h);
+
+      // Remove previously-added structural objects.
+      canvas.getObjects().forEach((o) => {
+        if ((o as any).zone) canvas.remove(o);
+      });
+
+      const tag = (obj: any, zone: string) => {
+        obj.zone = zone;
+        obj.set({ selectable: false, evented: false });
+        return obj;
+      };
+
+      // --- White area covering the QR AND the trademark strip (both sit on white,
+      // never on the coloured print area). The print area begins at L.designLeft.
+      const closure = tag(
+        new Rect({ left: 0, top: 0, width: L.tmX + L.tmW + 4, height: h, fill: "#FFFFFF" }),
+        "qr-bg",
+      );
+      canvas.add(closure);
+
+      // --- Die-cut guide lines, top & bottom of the printable band (a few px inset).
+      const diecutTop = tag(
+        new Line([2, DIECUT_PAD, w - 2, DIECUT_PAD], {
+          stroke: "#9CA3AF",
+          strokeWidth: 1,
+          strokeDashArray: [6, 4],
+        }),
+        "diecut",
+      );
+      const diecutBottom = tag(
+        new Line([2, h - DIECUT_PAD, w - 2, h - DIECUT_PAD], {
+          stroke: "#9CA3AF",
+          strokeWidth: 1,
+          strokeDashArray: [6, 4],
+        }),
+        "diecut",
+      );
+      canvas.add(diecutTop, diecutBottom);
+
+      // QR code, sitting on the white tab at the left edge.
+      const qrSrc = qrOn ? QRCheckedImg : QRPlaceholderImg;
+      try {
+        const img = await FabricImage.fromURL(qrSrc, { crossOrigin: "anonymous" });
+        img.scaleToWidth(L.qrSize);
+        if (img.getScaledHeight() > L.qrSize) img.scaleToHeight(L.qrSize);
+        img.set({
+          left: (L.qrLeft + L.qrRight) / 2,
+          top: h / 2,
+          originX: "center",
+          originY: "center",
+          opacity: qrOn ? 1 : 0.5,
+        });
+        tag(img, "qr");
+        canvas.add(img);
+      } catch (e) {
+        // QR image is decorative; ignore load failures.
+      }
+
+      // Trademark: vertical text, 5px to the right of the QR, in the same area.
+      // No bordered strip — it shares the left area with the QR.
+      if (tmOn && tmText.trim()) {
+        const tm = tag(
+          new IText(tmText.trim(), {
+            left: L.tmX + L.tmW / 2,
+            top: h / 2,
+            fontSize: Math.max(12, Math.round(L.tmW * 0.7)),
+            fill: tmColor === "white" ? "#FFFFFF" : "#000000",
+            fontFamily: tmFontFamily,
+            fontWeight: tmIsBold ? "bold" : "normal",
+            fontStyle: tmIsItalic ? "italic" : "normal",
+            originX: "center",
+            originY: "center",
+            angle: -90,
+          }),
+          "trademark",
+        );
+        canvas.add(tm);
+      }
+
+      // Z-order: closure tab + perforation sit behind everything else.
+      canvas.getObjects().forEach((o) => {
+        const z = (o as any).zone;
+        if (z === "qr-bg" || z === "diecut") canvas.sendObjectToBack(o);
+      });
+      canvas.renderAll();
+    },
+    [hasTrademark, trademarkText, trademarkTextColor, tmFont, tmBold, tmItalic, hasQrCode],
+  );
+
+  // ---- Canvas init ----
   useEffect(() => {
     if (!canvasContainerRef.current || fabricCanvas) return;
-    const canvas = new FabricCanvas(canvasContainerRef.current.querySelector("canvas")!, {
-      width: 1200,
-      height: 100,
+    const el = canvasContainerRef.current.querySelector("canvas");
+    if (!el) return;
+    const dims = CANVAS_DIMS[wristbandType] || CANVAS_DIMS.tyvek;
+    const canvas = new FabricCanvas(el, {
+      width: dims.width,
+      height: dims.height,
       backgroundColor: wristbandColor,
+      preserveObjectStacking: true,
     });
-    
-    const initDims = CANVAS_DIMS[wristbandType] || CANVAS_DIMS.tyvek;
-    canvas.setWidth(initDims.width);
-    canvas.setHeight(initDims.height);
-
-    const qrWhiteSpace = new Rect({
-      left: 0,
-      top: 0,
-      width: 100,
-      height: initDims.height,
-      fill: '#FFFFFF',
-      selectable: false,
-      evented: false,
-    });
-    (qrWhiteSpace as any)._isBoundaryLeft = true;
-
-    const closingWhiteSpace = new Rect({
-      left: initDims.width - 50,
-      top: 0,
-      width: 50,
-      height: initDims.height,
-      fill: '#FFFFFF',
-      selectable: false,
-      evented: false,
-    });
-    (closingWhiteSpace as any)._isBoundaryRight = true;
-
-    const diecutMargin = 100;
-    const topLine = new Line([diecutMargin, 8, initDims.width - 50, 8], {
-      stroke: '#666666',
-      strokeWidth: 1,
-      strokeDashArray: [5, 5],
-      selectable: false,
-      evented: false,
-    });
-    (topLine as any)._isDiecutTop = true;
-
-    const bottomLine = new Line([diecutMargin, initDims.height - 8, initDims.width - 50, initDims.height - 8], {
-      stroke: '#666666',
-      strokeWidth: 1,
-      strokeDashArray: [5, 5],
-      selectable: false,
-      evented: false,
-    });
-    (bottomLine as any)._isDiecutBottom = true;
-    
-    canvas.add(qrWhiteSpace, closingWhiteSpace, topLine, bottomLine);
-    canvas.sendObjectToBack(closingWhiteSpace);
-    canvas.sendObjectToBack(qrWhiteSpace);
     setFabricCanvas(canvas);
-    
-    // Load saved templates
     loadTemplates();
     loadSuppliers();
-    
     return () => {
       canvas.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Background colour
+  useEffect(() => {
+    if (!fabricCanvas) return;
+    fabricCanvas.backgroundColor = wristbandColor;
+    fabricCanvas.renderAll();
+  }, [wristbandColor, fabricCanvas]);
+
+  // Canvas dimensions follow wristband type, then structure rebuilds
+  useEffect(() => {
+    if (!fabricCanvas) return;
+    const dims = CANVAS_DIMS[wristbandType] || CANVAS_DIMS.tyvek;
+    fabricCanvas.setDimensions({ width: dims.width, height: dims.height });
+    if (!isRestoringRef.current) void rebuildStructure(fabricCanvas);
+  }, [wristbandType, fabricCanvas, rebuildStructure]);
+
+  // Rebuild structure when QR/trademark options change
+  useEffect(() => {
+    if (!fabricCanvas || isRestoringRef.current) return;
+    void rebuildStructure(fabricCanvas);
+  }, [hasQrCode, hasTrademark, trademarkText, trademarkTextColor, tmFont, tmBold, tmItalic, fabricCanvas, rebuildStructure]);
 
   const loadSuppliers = async () => {
     try {
       const data = await apiFetch("/suppliers");
       setSuppliers(data || []);
       if (data && data.length > 0) {
-        setSelectedSupplierId(data[0].id);
+        // Honour a supplier chosen from the homepage ("Design with this supplier").
+        const preferred = localStorage.getItem("preferred_supplier");
+        const match = preferred && data.find((s: any) => s.id === preferred);
+        if (preferred) localStorage.removeItem("preferred_supplier");
+        setSelectedSupplierId(match ? preferred : data[0].id);
       }
     } catch (e) {
       console.error("Failed to load suppliers:", e);
@@ -234,135 +377,20 @@ const DesignStudio = () => {
 
   useEffect(() => {
     if (!selectedSupplierId) return;
-    const loadSupplierData = async () => {
+    (async () => {
       try {
-        const [pricingData, productsData] = await Promise.all([
-          apiFetch(`/suppliers/${selectedSupplierId}/pricing`),
-          apiFetch(`/suppliers/${selectedSupplierId}/products`),
-        ]);
-        setSupplierConfigs(pricingData || []);
-        const products = productsData || [];
+        const products = (await apiFetch(`/suppliers/${selectedSupplierId}/products`)) || [];
         setSupplierProducts(products);
-        if (products.length > 0) {
+        if (products.length > 0 && !isRestoringRef.current) {
           setSelectedProductId(products[0].id);
           setWristbandType(products[0].wristbandType as WristbandType);
           setQuantity(products[0].minOrderQuantity || 1000);
-        } else {
-          setSelectedProductId("");
         }
       } catch (e) {
-        console.error("Failed to load supplier data:", e);
+        console.error("Failed to load supplier products:", e);
       }
-    };
-    loadSupplierData();
+    })();
   }, [selectedSupplierId]);
-
-  // Load design from edit mode (if navigated from order summary)
-  useEffect(() => {
-    if (!fabricCanvas || !editDesignState) return;
-    
-    const loadEditDesign = async () => {
-      isLoadingTemplateRef.current = true;
-      
-      try {
-        const od = editDesignState.orderDetails;
-        
-        // Restore ALL settings
-        setWristbandColor(od.wristband_color || "#FFFFFF");
-        setWristbandType((od.wristband_type || "tyvek") as WristbandType);
-        setQuantity(od.quantity || 1000);
-        setPrintType(od.print_type || "none");
-        setHasPrint(od.has_print !== undefined ? od.has_print : (od.print_type !== "none"));
-        setHasTrademark(od.has_trademark || false);
-        setTrademarkText(od.trademark_text || "");
-        setTrademarkTextColor(od.trademark_text_color === "white" ? "white" : "black");
-        setHasQrCode(od.has_qr_code || false);
-        
-        // Update background color
-        fabricCanvas.backgroundColor = od.wristband_color || "#FFFFFF";
-        
-        // Load canvas JSON with all objects (logos, text, etc.)
-        if (editDesignState.canvasJson) {
-          await new Promise<void>((resolve) => {
-            fabricCanvas.loadFromJSON(editDesignState.canvasJson, () => {
-              // After loading, make sure ALL objects are properly configured
-              fabricCanvas.getObjects().forEach(obj => {
-                if (obj.type === 'i-text' || obj.type === 'text') {
-                  obj.set({
-                    editable: true,
-                    selectable: true,
-                    evented: true,
-                  });
-                } else if (obj.type === 'image') {
-                  // Make sure images are selectable (except QR and structural elements)
-                  if ((obj as any).selectable !== false) {
-                    obj.set({
-                      selectable: true,
-                      evented: true,
-                    });
-                  }
-                }
-              });
-              
-              fabricCanvas.renderAll();
-              
-              // Find and set uploaded image reference
-              const imgObj = fabricCanvas.getObjects().find(o => 
-                o.type === 'image' && (o as any).selectable !== false
-              ) as FabricImage | undefined;
-              if (imgObj) setUploadedImage(imgObj as any);
-              
-              resolve();
-            });
-          });
-          
-          toast.success("Design loaded for editing!");
-        }
-      } catch (e) {
-        console.error("Failed to load design for editing:", e);
-        toast.error("Failed to load design");
-      } finally {
-        setTimeout(() => {
-          isLoadingTemplateRef.current = false;
-        }, 100);
-      }
-    };
-    
-    loadEditDesign();
-  }, [fabricCanvas, editDesignState]);
-
-  useEffect(() => {
-    if (isLoadingTemplateRef.current) return;
-    if (fabricCanvas) {
-      fabricCanvas.backgroundColor = wristbandColor;
-      fabricCanvas.renderAll();
-    }
-  }, [wristbandColor, fabricCanvas]);
-
-  useEffect(() => {
-    if (!fabricCanvas) return;
-    const dims = CANVAS_DIMS[wristbandType] || CANVAS_DIMS.tyvek;
-    fabricCanvas.setWidth(dims.width);
-    fabricCanvas.setHeight(dims.height);
-
-    // Update the static overlay rectangles and diecut lines
-    fabricCanvas.getObjects().forEach(obj => {
-      if (obj.selectable === false && obj.evented === false) {
-        const anyObj = obj as any;
-        if (anyObj._isBoundaryLeft) {
-          obj.set({ height: dims.height });
-        } else if (anyObj._isBoundaryRight) {
-          obj.set({ left: dims.width - 50, height: dims.height });
-        } else if (anyObj._isDiecutTop) {
-          obj.set({ x2: dims.width - 50 });
-        } else if (anyObj._isDiecutBottom) {
-          obj.set({ y1: dims.height - 8, y2: dims.height - 8, x2: dims.width - 50 });
-        }
-      }
-    });
-
-    fabricCanvas.renderAll();
-  }, [wristbandType, fabricCanvas]);
 
   const loadTemplates = async () => {
     try {
@@ -370,210 +398,98 @@ const DesignStudio = () => {
       if (!user) return;
       const data = await apiFetch("/designs/mine");
       setSavedTemplates(data || []);
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to load templates:", error);
     }
   };
 
-
+  // ---- Pricing via the authoritative server engine ----
   useEffect(() => {
-    const fetchPricing = async () => {
-      if (!selectedSupplierId) return;
-
+    if (!selectedProductId) {
+      setQuote(null);
+      return;
+    }
+    let cancelled = false;
+    const id = setTimeout(async () => {
       setLoadingPrice(true);
       try {
-        const config = supplierConfigs.find(c => c.wristbandType === wristbandType);
-
-        if (!config) {
-          setPricing(null);
-          return;
-        }
-
-        const minQty = config.minQuantity;
-        const safeQty = Math.max(quantity, minQty);
-
-        // Check if the selected product has quantity-based pricing tiers
-        const product = supplierProducts.find(p => p.id === selectedProductId);
-        const tiers: any[] = product?.pricingTiers || [];
-        const matchingTier = tiers.find(
-          (t: any) => safeQty >= t.minQuantity && (t.maxQuantity == null || safeQty <= t.maxQuantity)
-        );
-
-        let basePrice: number;
-        if (matchingTier) {
-          basePrice = currency === "USD"
-            ? matchingTier.pricePerUnitUsd
-            : currency === "GBP"
-            ? (matchingTier.pricePerUnitGbp ?? matchingTier.pricePerUnitUsd)
-            : (matchingTier.pricePerUnitEur ?? matchingTier.pricePerUnitUsd);
-        } else {
-          basePrice = currency === "USD"
-            ? config.basePriceUsd
-            : currency === "GBP"
-            ? config.basePriceGbp
-            : config.basePriceEur;
-        }
-
-        let printExtra: number;
-        let qrExtra: number;
-        let trademarkExtra: number;
-
-        if (currency === "USD") {
-          printExtra = config.fullColorPrintExtraUsd;
-          qrExtra = config.secureGuestsExtraUsd;
-          trademarkExtra = config.blackPrintExtraUsd;
-        } else if (currency === "GBP") {
-          printExtra = config.fullColorPrintExtraGbp;
-          qrExtra = config.secureGuestsExtraEur;
-          trademarkExtra = config.blackPrintExtraGbp;
-        } else {
-          printExtra = config.fullColorPrintExtraEur;
-          qrExtra = config.secureGuestsExtraEur;
-          trademarkExtra = config.blackPrintExtraEur;
-        }
-
-        const extraCharges: { print?: number; trademark?: number; qrCode?: number } = {};
-        if (hasTrademark) extraCharges.trademark = trademarkExtra * safeQty;
-        if (hasPrint) extraCharges.print = printExtra * safeQty;
-        if (hasQrCode) extraCharges.qrCode = qrExtra * safeQty;
-
-        const totalExtras = (extraCharges.trademark || 0) + (extraCharges.print || 0) + (extraCharges.qrCode || 0);
-        const totalPrice = basePrice * safeQty + totalExtras;
-
-        setPricing({ basePrice, extraCharges, unitPrice: basePrice, totalPrice, minQuantity: minQty });
+        const printForQuote: QuotePrintType =
+          !hasPrint || printType === "none" ? "none" : printType === "black" ? "black" : "color";
+        const q = await getQuote({
+          productId: selectedProductId,
+          quantity: Math.max(quantity, minQty),
+          currency,
+          printType: printForQuote,
+          hasCustomDesign: hasPrint || !!uploadedImage,
+          hasLogo: !!uploadedImage,
+          qrEnabled: hasQrCode,
+          trademarkEnabled: hasTrademark,
+        });
+        if (!cancelled) setQuote(q);
       } catch (error: any) {
-        toast.error(error.message || "Failed to calculate pricing");
+        if (!cancelled) {
+          setQuote(null);
+          // Below-min and similar validation errors are surfaced inline, not as toasts.
+        }
       } finally {
-        setLoadingPrice(false);
+        if (!cancelled) setLoadingPrice(false);
       }
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
     };
-    fetchPricing();
-  }, [wristbandType, quantity, printType, hasTrademark, hasPrint, hasQrCode, selectedSupplierId, selectedProductId, supplierProducts, supplierConfigs, currency]);
+  }, [selectedProductId, quantity, minQty, hasPrint, printType, hasQrCode, hasTrademark, uploadedImage, currency]);
 
-
-  // Update trademark text on canvas (vertical and rotatable)
-  useEffect(() => {
-    if (!fabricCanvas) return;
-    // If we're loading a template, skip programmatic trademark insertion to avoid duplicates
-    if (isLoadingTemplateRef.current) return;
-
-    // Remove existing trademark text object we previously managed
-    if (trademarkTextObj) {
-      try { fabricCanvas.remove(trademarkTextObj); } catch (e) { /* ignore */ }
-      setTrademarkTextObj(null);
-    }
-
-    // Add new trademark text if enabled (vertical, from bottom to top)
-    if (hasTrademark && trademarkText.trim()) {
-      const text = new IText(trademarkText, {
-        left: 1145, // Right side near closing white space
-        top: 92, // Start from bottom
-        fontSize: 10,
-        fill: trademarkTextColor === "white" ? "#FFFFFF" : "#000000",
-        fontFamily: "Arial",
-        fontWeight: 'light',
-        originX: 'center',
-        originY: 'bottom',
-        angle: -90, // Vertical text (from bottom to top)
-        lockMovementX: true,
-        lockMovementY: true,
-        lockRotation: true,
-        lockScalingX: true,
-        lockScalingY: true,
-        selectable: false, // Not selectable to avoid conflicts
-        evented: false,
-      });
-
-      fabricCanvas.add(text);
-      fabricCanvas.sendObjectToBack(text); // Send to back to avoid overlapping custom text
-      setTrademarkTextObj(text);
-      fabricCanvas.renderAll();
-    }
-  }, [hasTrademark, trademarkText, trademarkTextColor, fabricCanvas]);
-
-  // Update QR placeholder on canvas (shows QR2.png initially, QR.jpg when checkbox is checked)
-  useEffect(() => {
-    if (!fabricCanvas) return;
-    
-    // Remove existing QR placeholder
-    if (qrPlaceholder) {
-      fabricCanvas.remove(qrPlaceholder);
-      setQrPlaceholder(null);
-    }
-    
-    // Always show QR image (QR2.png initially, QR.jpg when checkbox is checked)
-    const qrImageSrc = hasQrCode ? QRCheckedImg : QRPlaceholderImg;
-    FabricImage.fromURL(qrImageSrc, { crossOrigin: "anonymous" }).then((img) => {
-      // Scale to fit placeholder area (80x80)
-      try {
-        img.scaleToWidth(80);
-        if (img.getScaledHeight() > 80) img.scaleToHeight(80);
-      } catch (e) {}
-
-      img.set({
-        left: 10,
-        top: 10,
-        selectable: false,
-        evented: false,
-      });
-
-      fabricCanvas.add(img);
-      fabricCanvas.bringObjectToFront(img);
-      setQrPlaceholder(img);
-      fabricCanvas.renderAll();
-    }).catch((err) => {
-      console.error('Failed to load QR image:', err);
-    });
-  }, [hasQrCode, fabricCanvas]);
-
+  // ---- Image / text tools ----
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !fabricCanvas) return;
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Image must be less than 5MB");
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file");
       return;
     }
-  // Auto-enable print when logo is uploaded (assume full color)
-  setPrintType("full_color");
-  setHasPrint(true);
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error("Image must be under 15MB");
+      return;
+    }
+    setPrintType("full_color");
+    setHasPrint(true);
     const reader = new FileReader();
     reader.onload = async (event) => {
       const imgUrl = event.target?.result as string;
-      FabricImage.fromURL(imgUrl, { crossOrigin: "anonymous" }).then((img) => {
-        // Scale to fit within the design area (between diecut lines)
-        const maxWidth = 300; // Reasonable size for logos
-        const maxHeight = 60; // Fits within diecut lines (84px - margins)
-        
-        if (img.width! > maxWidth) {
-          img.scaleToWidth(maxWidth);
-        }
-        if (img.getScaledHeight() > maxHeight) {
-          img.scaleToHeight(maxHeight);
-        }
-        
-        // Position in the design area with proper clipping - start at left after QR
-        img.set({
-          left: 110 + (img.getScaledWidth() / 2), // Start at left after QR space
-          top: 50 - (img.getScaledHeight() / 2), // Center vertically
-          selectable: true, // Keep selectable
-          evented: true, // Keep evented
-          clipPath: new Rect({
-            left: 100,
-            top: 8,
-            width: 1050,
-            height: 84,
-            absolutePositioned: true,
-          }),
-        });
-        
-        fabricCanvas.add(img);
-        setUploadedImage(img);
-        fabricCanvas.setActiveObject(img);
-        fabricCanvas.renderAll();
-        toast.success("Logo uploaded! Drag to position or click 'Duplicate Logo' to add more");
+      const img = await FabricImage.fromURL(imgUrl, { crossOrigin: "anonymous" });
+      const L = bandLayout(fabricCanvas.getWidth(), fabricCanvas.getHeight());
+      // Auto-fit the logo into the printable area (never block the upload).
+      const maxWidth = L.designRight - L.designLeft - 16;
+      const maxHeight = fabricCanvas.getHeight() - 12;
+      if (img.getScaledWidth() > maxWidth) img.scaleToWidth(maxWidth);
+      if (img.getScaledHeight() > maxHeight) img.scaleToHeight(maxHeight);
+      img.set({
+        left: L.designLeft + img.getScaledWidth() / 2 + 8,
+        top: fabricCanvas.getHeight() / 2,
+        originY: "center",
+        selectable: true,
+        evented: true,
+        clipPath: designClip(fabricCanvas),
       });
+      fabricCanvas.add(img);
+      setUploadedImage(img);
+      fabricCanvas.setActiveObject(img);
+      fabricCanvas.renderAll();
+      toast.success("Logo added — drag to position, or use 'Duplicate Logo' to add more");
     };
     reader.readAsDataURL(file);
+  };
+
+  // Live-apply the current style controls to the selected text object (if any).
+  const styleActiveText = (patch: Record<string, unknown>) => {
+    if (!fabricCanvas) return;
+    const active = fabricCanvas.getActiveObject();
+    if (active && ["i-text", "text", "textbox"].includes((active.type || "").toLowerCase())) {
+      active.set(patch);
+      fabricCanvas.requestRenderAll();
+    }
   };
 
   const handleAddText = () => {
@@ -581,124 +497,251 @@ const DesignStudio = () => {
       toast.error("Please enter text to add");
       return;
     }
-
-    const colorInput = document.getElementById("textColor") as HTMLInputElement;
-    const selectedColor = colorInput ? colorInput.value : "#000000";
-
+    const L = bandLayout(fabricCanvas.getWidth(), fabricCanvas.getHeight());
     const text = new IText(customText, {
-      left: 625,
-      top: 50,
-      fontSize: 36,
-      fill: selectedColor,
-      fontFamily: "Arial",
-      originX: 'center',
-      fontWeight: 'bold', 
-      originY: 'center',
+      left: (L.designLeft + L.designRight) / 2,
+      top: fabricCanvas.getHeight() / 2,
+      fontSize: Math.min(textSize, fabricCanvas.getHeight() - 20),
+      fill: textColor,
+      fontFamily: textFont,
+      fontWeight: textBold ? "bold" : "normal",
+      fontStyle: textItalic ? "italic" : "normal",
+      originX: "center",
+      originY: "center",
       editable: true,
       selectable: true,
       evented: true,
-      lockMovementX: false,
-      lockMovementY: false,
-      clipPath: new Rect({
-        left: 100,
-        top: 8,
-        width: 1050,
-        height: 84,
-        absolutePositioned: true,
-      }),
+      clipPath: designClip(fabricCanvas),
     });
-
     fabricCanvas.add(text);
     fabricCanvas.setActiveObject(text);
     fabricCanvas.renderAll();
     setCustomText("");
-    toast.success("Text added! Double-click to edit");
+    toast.success("Text added — double-click to edit");
+  };
+
+  // Full-bleed wristband background image (stretched to cover the band). Sits
+  // behind everything; the white QR/trademark tab still renders on top of it.
+  const handleBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !fabricCanvas) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error("Image must be under 15MB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const img = await FabricImage.fromURL(event.target?.result as string, { crossOrigin: "anonymous" });
+      const w = fabricCanvas.getWidth();
+      const h = fabricCanvas.getHeight();
+      img.set({
+        originX: "left",
+        originY: "top",
+        left: 0,
+        top: 0,
+        scaleX: w / (img.width || 1),
+        scaleY: h / (img.height || 1),
+        selectable: false,
+        evented: false,
+      });
+      fabricCanvas.backgroundImage = img;
+      fabricCanvas.renderAll();
+      toast.success("Background applied to the wristband");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearBackgroundImage = () => {
+    if (!fabricCanvas) return;
+    fabricCanvas.backgroundImage = undefined;
+    fabricCanvas.renderAll();
+    toast.success("Background removed");
   };
 
   const handleDuplicateLogo = () => {
     if (!fabricCanvas) return;
-    
-    const activeObject = fabricCanvas.getActiveObject();
-    if (activeObject && activeObject.type === 'image') {
-      const img = activeObject as FabricImage;
-      const imgElement = img.getElement() as HTMLImageElement;
-      
-      FabricImage.fromURL(imgElement.src, { crossOrigin: "anonymous" }).then((cloned) => {
+    const active = fabricCanvas.getActiveObject();
+    if (active && (active.type || "").toLowerCase() === "image") {
+      const img = active as FabricImage;
+      const src = (img.getElement() as HTMLImageElement).src;
+      FabricImage.fromURL(src, { crossOrigin: "anonymous" }).then((cloned) => {
         cloned.set({
-          left: img.left! + 30,
-          top: img.top! + 30,
+          left: (img.left || 0) + 30,
+          top: (img.top || 0) + 20,
           scaleX: img.scaleX,
           scaleY: img.scaleY,
           angle: img.angle,
-          clipPath: new Rect({
-            left: 100,
-            top: 8,
-            width: 1050,
-            height: 84,
-            absolutePositioned: true,
-          }),
+          originY: img.originY,
+          clipPath: designClip(fabricCanvas),
         });
         fabricCanvas.add(cloned);
         fabricCanvas.setActiveObject(cloned);
         fabricCanvas.renderAll();
-        toast.success("Logo duplicated! Drag to reposition");
+        toast.success("Logo duplicated");
       });
     } else {
       toast.error("Select a logo to duplicate");
     }
   };
 
+  // Serialize only user content (logos/text); structure is rebuilt from state.
+  const serializeUserCanvas = (): string => {
+    if (!fabricCanvas) return "";
+    const json: any = fabricCanvas.toJSON(["selectable", "evented", "zone"] as any);
+    json.objects = (json.objects || []).filter((o: any) => !o.zone);
+    return JSON.stringify(json);
+  };
+
+  const buildMeta = (): DesignMetaSnapshot => ({
+    quantity: Math.max(quantity, minQty),
+    currency,
+    wristbandType,
+    wristbandColor,
+    printType,
+    hasPrint,
+    hasQrCode,
+    hasTrademark,
+    trademarkText,
+    trademarkTextColor,
+    tmFont,
+    tmBold,
+    tmItalic,
+    supplierId: selectedSupplierId,
+    productId: selectedProductId,
+    pricing: { unitPrice: quote?.unitPrice ?? 0, total: quote?.total ?? 0 },
+  });
+
+  // ---- Restore a saved design ----
+  const restoreDesign = useCallback(
+    async (meta: Partial<DesignMetaSnapshot>, canvasJson?: string | null) => {
+      if (!fabricCanvas) return;
+      isRestoringRef.current = true;
+      try {
+        if (meta.wristbandColor) setWristbandColor(meta.wristbandColor);
+        if (meta.wristbandType) setWristbandType(meta.wristbandType as WristbandType);
+        if (typeof meta.quantity === "number") setQuantity(meta.quantity);
+        if (meta.printType) setPrintType(meta.printType as PrintType);
+        if (typeof meta.hasPrint === "boolean") setHasPrint(meta.hasPrint);
+        if (typeof meta.hasQrCode === "boolean") setHasQrCode(meta.hasQrCode);
+        if (typeof meta.hasTrademark === "boolean") setHasTrademark(meta.hasTrademark);
+        if (typeof meta.trademarkText === "string") setTrademarkText(meta.trademarkText);
+        if (meta.trademarkTextColor) setTrademarkTextColor(meta.trademarkTextColor);
+        if (meta.tmFont) setTmFont(meta.tmFont);
+        if (typeof meta.tmBold === "boolean") setTmBold(meta.tmBold);
+        if (typeof meta.tmItalic === "boolean") setTmItalic(meta.tmItalic);
+        if (meta.supplierId) setSelectedSupplierId(meta.supplierId);
+        if (meta.productId) setSelectedProductId(meta.productId);
+
+        const dims = CANVAS_DIMS[(meta.wristbandType as WristbandType) || wristbandType] || CANVAS_DIMS.tyvek;
+        fabricCanvas.setDimensions({ width: dims.width, height: dims.height });
+        fabricCanvas.backgroundColor = meta.wristbandColor || wristbandColor;
+
+        // loadFromJSON in Fabric v6 returns a promise that resolves once every
+        // object (images included) has loaded — this is the correct completion
+        // signal (the old callback arg was a per-object reviver, which fired early).
+        if (canvasJson) {
+          await fabricCanvas.loadFromJSON(JSON.parse(canvasJson));
+          fabricCanvas.getObjects().forEach((o) => {
+            const t = (o.type || "").toLowerCase();
+            if (t === "image" || t === "i-text" || t === "text" || t === "textbox") {
+              o.set({ selectable: true, evented: true });
+            }
+          });
+          const logo = fabricCanvas
+            .getObjects()
+            .find((o) => (o.type || "").toLowerCase() === "image") as FabricImage | undefined;
+          setUploadedImage(logo ?? null);
+        } else {
+          fabricCanvas.remove(...fabricCanvas.getObjects());
+          setUploadedImage(null);
+        }
+
+        await rebuildStructure(fabricCanvas, {
+          hasQrCode: !!meta.hasQrCode,
+          hasTrademark: !!meta.hasTrademark,
+          trademarkText: meta.trademarkText ?? "",
+          trademarkTextColor: meta.trademarkTextColor ?? "black",
+          tmFont: meta.tmFont,
+          tmBold: meta.tmBold,
+          tmItalic: meta.tmItalic,
+        });
+        fabricCanvas.renderAll();
+        toast.success("Design loaded for editing");
+      } catch (e) {
+        console.error("Failed to restore design:", e);
+        toast.error("Failed to load design");
+      } finally {
+        // Release after effects settle so they don't double-rebuild structure.
+        setTimeout(() => {
+          isRestoringRef.current = false;
+        }, 150);
+      }
+    },
+    [fabricCanvas, rebuildStructure, wristbandColor, wristbandType],
+  );
+
+  // Restore from navigation state (MyDesigns / order edit)
+  useEffect(() => {
+    if (!fabricCanvas || !editDesignState) return;
+    const meta = editDesignState.metaJson
+      ? JSON.parse(editDesignState.metaJson)
+      : editDesignState.orderDetails || {};
+    // normalise snake_case order details into the meta shape
+    const normalised: Partial<DesignMetaSnapshot> = {
+      wristbandColor: meta.wristbandColor ?? meta.wristband_color,
+      wristbandType: meta.wristbandType ?? meta.wristband_type,
+      quantity: meta.quantity,
+      printType: meta.printType ?? meta.print_type,
+      hasPrint: meta.hasPrint ?? meta.has_print,
+      hasQrCode: meta.hasQrCode ?? meta.has_qr_code,
+      hasTrademark: meta.hasTrademark ?? meta.has_trademark,
+      trademarkText: meta.trademarkText ?? meta.trademark_text,
+      trademarkTextColor: meta.trademarkTextColor ?? meta.trademark_text_color,
+      supplierId: meta.supplierId,
+      productId: meta.productId,
+    };
+    void restoreDesign(normalised, editDesignState.canvasJson);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fabricCanvas]);
+
+  // ---- Persistence / orders ----
+  const persistDesign = async (): Promise<any> => {
+    const dataUrl = fabricCanvas!.toDataURL({ format: "png", quality: 1, multiplier: 2 });
+    const publicUrl = await uploadDesignImage(dataUrl);
+    return apiFetch("/designs", {
+      method: "POST",
+      body: JSON.stringify({
+        designUrl: publicUrl,
+        wristbandColor,
+        wristbandType,
+        customText: trademarkText || "",
+        textColor: trademarkTextColor === "white" ? "#FFFFFF" : "#000000",
+        canvasJson: serializeUserCanvas(),
+        metaJson: JSON.stringify(buildMeta()),
+      }),
+    });
+  };
+
   const handleSaveTemplate = async () => {
     if (!fabricCanvas) return;
-    
     setSaving(true);
     try {
       const user = await getCurrentUser();
       if (!user) {
-        toast.error("Please sign in to save templates");
+        toast.error("Please sign in to save designs");
         navigate("/auth");
         return;
       }
-
-      const dataUrl = fabricCanvas.toDataURL({ format: "png", quality: 1, multiplier: 2 });
-      const publicUrl = await uploadDesignImage(dataUrl);
-
-      const jsonPayload = {
-        canvas: fabricCanvas.toJSON(),
-        orderDetails: {
-          quantity,
-          total_price: pricing?.totalPrice || 0,
-          unit_price: pricing?.unitPrice || 0,
-          currency,
-          wristband_type: wristbandType,
-          wristband_color: wristbandColor,
-          print_type: printType,
-          has_trademark: hasTrademark,
-          trademark_text: trademarkText,
-          trademark_text_color: trademarkTextColor,
-          has_qr_code: hasQrCode,
-          has_print: hasPrint,
-          supplierId: selectedSupplierId,
-        },
-        saved_at: new Date().toISOString(),
-      };
-      await apiFetch("/designs", {
-        method: "POST",
-        body: JSON.stringify({
-          designUrl: publicUrl,
-          wristbandColor,
-          wristbandType,
-          customText: trademarkText || "",
-          textColor: trademarkTextColor === "white" ? "#FFFFFF" : "#000000",
-          canvasJson: fabricCanvas ? JSON.stringify(fabricCanvas.toJSON()) : undefined,
-        }),
-      });
-
-      toast.success("Template saved successfully");
+      await persistDesign();
+      toast.success("Design saved");
       loadTemplates();
     } catch (error: any) {
-      console.error("Save template error:", error);
-      toast.error(error.message || "Failed to save template");
+      console.error("Save error:", error);
+      toast.error(error.message || "Failed to save design");
     } finally {
       setSaving(false);
     }
@@ -707,10 +750,10 @@ const DesignStudio = () => {
   const handleDeleteTemplate = async (id: string) => {
     try {
       await apiFetch(`/designs/${id}`, { method: "DELETE" });
-      toast.success("Template deleted");
+      toast.success("Design deleted");
       loadTemplates();
-    } catch (error: any) {
-      toast.error("Failed to delete template");
+    } catch {
+      toast.error("Failed to delete design");
     }
   };
 
@@ -733,77 +776,48 @@ const DesignStudio = () => {
     }
   };
 
-  const handlePlaceOrder = async () => {
+  const submitOrder = async (asCart: boolean) => {
     if (!fabricCanvas) {
       toast.error("Please create a design");
       return;
     }
     if (!selectedSupplierId?.trim()) {
-      toast.error("Select a supplier first — prices and fulfillment come from the supplier you choose");
+      toast.error("Select a supplier first");
       return;
     }
-    if (!pricing) {
+    if (!quote) {
       toast.error("Please wait for pricing to load");
       return;
     }
-    const minQty = pricing.minQuantity || 1000;
     if (quantity < minQty) {
       toast.error(`Minimum quantity is ${minQty} pieces`);
       return;
     }
-    if (!Number.isFinite(pricing.totalPrice) || !Number.isFinite(quantity)) {
-      toast.error("Invalid price; adjust options and try again");
-      return;
-    }
-
     setSaving(true);
     try {
       const user = await getCurrentUser();
       if (!user) {
-        toast.error("Please sign in to place order");
+        toast.error("Please sign in to continue");
         navigate("/auth");
         return;
       }
-
-      const dataUrl = fabricCanvas.toDataURL({ format: "png", quality: 1, multiplier: 2 });
-      const publicUrl = await uploadDesignImage(dataUrl);
-      const design = await apiFetch("/designs", {
-        method: "POST",
-        body: JSON.stringify({
-          designUrl: publicUrl,
-          wristbandColor,
-          wristbandType,
-        }),
+      const design = await persistDesign();
+      // Add to the real cart (server recomputes the authoritative price).
+      await addToCart({
+        designId: design.id,
+        productId: selectedProductId || undefined,
+        supplierId: selectedSupplierId || undefined,
+        quantity: Math.max(quantity, minQty),
+        currency,
+        options: buildMeta(),
       });
-
-      await apiFetch("/orders", {
-        method: "POST",
-        body: JSON.stringify({
-          designId: design.id,
-          quantity,
-          totalPrice: pricing.totalPrice,
-          unitPrice: pricing.unitPrice,
-          basePrice: pricing.basePrice,
-          currency,
-          printType,
-          extraCharges: pricing.extraCharges,
-          status: "DRAFT",
-          paymentStatus: "pending",
-          supplierId: selectedSupplierId || undefined,
-          productId: selectedProductId || undefined,
-          customizationNotes: JSON.stringify({
-            wristband_color: wristbandColor,
-            has_trademark: hasTrademark,
-            trademark_text: trademarkText,
-            trademark_text_color: trademarkTextColor,
-            has_qr_code: hasQrCode,
-            has_print: hasPrint,
-          }),
-        }),
-      });
-
-      navigate("/order-summary");
-      toast.success("Proceeding to order summary...");
+      if (asCart) {
+        toast.success("Added to cart — you can close this tab");
+        setTimeout(() => window.close(), 1500);
+      } else {
+        toast.success("Added to cart");
+        navigate("/order-summary");
+      }
     } catch (error: any) {
       toast.error(error.message || "An error occurred");
     } finally {
@@ -811,7 +825,27 @@ const DesignStudio = () => {
     }
   };
 
-  const currencySymbol = "€";
+  const clearCanvas = () => {
+    if (!fabricCanvas) return;
+    fabricCanvas.getObjects().forEach((o) => {
+      if (!(o as any).zone) fabricCanvas.remove(o);
+    });
+    fabricCanvas.backgroundImage = undefined;
+    setUploadedImage(null);
+    setWristbandColor("#FFFFFF");
+    setWristbandType("tyvek");
+    setPrintType("none");
+    setHasPrint(false);
+    setHasTrademark(false);
+    setTrademarkText("");
+    setTrademarkTextColor("black");
+    setHasQrCode(false);
+    void rebuildStructure(fabricCanvas);
+    toast.success("Canvas cleared");
+  };
+
+  const sym = SYMBOL[currency];
+  const isNewTab = typeof window !== "undefined" && window.opener !== null;
 
   return (
     <div className="min-h-screen bg-gradient-subtle">
@@ -822,7 +856,7 @@ const DesignStudio = () => {
             Back
           </Button>
           <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            EU Wristbands - Design Studio
+            EU Wristbands · Design Studio
           </h1>
         </div>
       </header>
@@ -833,81 +867,68 @@ const DesignStudio = () => {
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h2 className="text-xl font-semibold">Design Preview</h2>
-                <p className="text-sm text-muted-foreground">Left white area: QR space | Middle: Design area | Right white: Closing end</p>
+                <p className="text-sm text-muted-foreground">
+                  255 × 25 mm · QR + trademark on the left, then the print area. Scroll sideways to design.
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={handleSaveTemplate} disabled={saving}>
                   <Save className="h-4 w-4 mr-2" />
-                  Save Template
+                  Save
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleDownloadPDF}>
                   <Download className="h-4 w-4 mr-2" />
-                  Download
+                  PNG
                 </Button>
                 <Button variant="outline" size="sm" onClick={handlePrint}>
                   <Printer className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-            <div ref={canvasContainerRef} className="bg-muted rounded-lg p-8 flex items-center justify-left overflow-x-auto " style={{ background: "linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%)", boxShadow: "inset 0 2px 8px rgba(0,0,0,0.1)" }}>
-              <div style={{ transform: "perspective(1000px) rotateX(-5deg)", transformStyle: "preserve-3d", boxShadow: "0 10px 30px rgba(0,0,0,0.3)", borderRadius: "4px" }}>
-                <canvas className="rounded" />
+
+            {/* Block container with horizontal scroll: the band renders at its
+                true pixel width (no shrinking) and scrolls sideways while you design. */}
+            <div
+              className="rounded-lg p-8 overflow-x-auto overflow-y-hidden"
+              style={{
+                background: "linear-gradient(135deg,#fafafa 0%,#e9e9ee 100%)",
+                boxShadow: "inset 0 2px 10px rgba(0,0,0,0.08)",
+              }}
+            >
+              <div
+                ref={canvasContainerRef}
+                className="shrink-0"
+                style={{
+                  width: "max-content",
+                  borderRadius: 2, // straight wristband — no rounded sides
+                  overflow: "hidden",
+                  boxShadow: "0 12px 30px rgba(0,0,0,0.28)",
+                }}
+              >
+                <canvas />
               </div>
             </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Left: die-cut closure (perforation) with the QR; 5px after it, the vertical trademark; the rest is the
+              printable area.
+            </p>
+
             <div className="mt-4 flex gap-2 flex-wrap">
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={handleDuplicateLogo}
-              >
+              <Button variant="outline" size="sm" onClick={handleDuplicateLogo}>
                 <Plus className="h-4 w-4 mr-2" />
                 Duplicate Logo
               </Button>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => {
-                  if (fabricCanvas) {
-                    // Remove all user-added objects (keep QR/closing white spaces and diecut lines)
-                    const objects = fabricCanvas.getObjects().filter(obj => obj.selectable !== false && obj.evented !== false);
-                    fabricCanvas.remove(...objects);
-                    setUploadedImage(null);
-                    
-                    // Reset all settings to defaults
-                    setWristbandColor("#FFFFFF");
-                    setWristbandType("tyvek");
-                    setQuantity(1000);
-                    setPrintType("none");
-                    setHasPrint(false);
-                    setHasTrademark(false);
-                    setTrademarkText("");
-                    setTrademarkTextColor("black");
-                    setHasQrCode(false);
-                    setPricing(null);
-                    
-                    if (trademarkTextObj) {
-                      try { fabricCanvas.remove(trademarkTextObj); } catch (e) {}
-                      setTrademarkTextObj(null);
-                    }
-                    
-                    // Don't remove QR placeholder - it will be re-rendered by useEffect with QR2.png
-                    // Just reset the hasQrCode state to false so it shows QR2.png
-                    
-                    fabricCanvas.backgroundColor = "#FFFFFF";
-                    fabricCanvas.renderAll();
-                    toast.success("Canvas cleared - Ready for new design");
-                  }
-                }}
-              >
+              <Button variant="outline" size="sm" onClick={clearCanvas}>
                 Clear Canvas
               </Button>
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
-                  const activeObject = fabricCanvas?.getActiveObject();
-                  if (activeObject) {
-                    fabricCanvas?.remove(activeObject);
+                  const active = fabricCanvas?.getActiveObject();
+                  if (active && !(active as any).zone) {
+                    fabricCanvas?.remove(active);
+                    fabricCanvas?.renderAll();
                     toast.success("Object removed");
                   } else {
                     toast.error("Select an object to delete");
@@ -917,136 +938,40 @@ const DesignStudio = () => {
                 Delete Selected
               </Button>
             </div>
-            
+
             {savedTemplates.length > 0 && (
               <div className="mt-6">
-                <h3 className="font-semibold mb-3">Saved Mockup</h3>
+                <h3 className="font-semibold mb-3">Saved Mockups</h3>
                 <div className="grid grid-cols-2 gap-3">
                   {savedTemplates.map((template) => (
-                    <div 
-                      key={template.id} 
+                    <div
+                      key={template.id}
                       className="relative group border rounded-lg overflow-hidden cursor-pointer"
-                      onClick={async () => {
-                        if (!fabricCanvas) return;
-                        
-                        isLoadingTemplateRef.current = true;
-                        
-                        try {
-                          // Clear canvas first (only user objects)
-                          const removable = fabricCanvas.getObjects().filter(obj => obj.selectable !== false && obj.evented !== false);
-                          if (removable.length) {
-                            fabricCanvas.remove(...removable);
-                          }
-                          setUploadedImage(null);
-                          
-                          // Restore from design's saved canvasJson (stored in DB)
-                          let restored = false;
-
-                          if (template.canvasJson) {
-                            setWristbandColor(template.wristbandColor || "#FFFFFF");
-                            setWristbandType((template.wristbandType || "tyvek") as WristbandType);
-                            setTrademarkText(template.customText || "");
-                            setTrademarkTextColor(template.textColor?.toLowerCase() === "#ffffff" ? "white" : "black");
-                            fabricCanvas.backgroundColor = template.wristbandColor || "#FFFFFF";
-
-                            await new Promise<void>((resolve) => {
-                              fabricCanvas.loadFromJSON(JSON.parse(template.canvasJson!), () => {
-                                fabricCanvas.getObjects().forEach(obj => {
-                                  if (obj.type === 'i-text' || obj.type === 'text') {
-                                    obj.set({ editable: true, selectable: true, evented: true });
-                                  } else if (obj.type === 'image' && (obj as any).selectable !== false) {
-                                    obj.set({ selectable: true, evented: true });
-                                  }
-                                });
-                                fabricCanvas.renderAll();
-                                const imgObj = fabricCanvas.getObjects().find(o =>
-                                  o.type === 'image' && (o as any).selectable !== false
-                                ) as FabricImage | undefined;
-                                if (imgObj) setUploadedImage(imgObj as any);
-                                resolve();
-                              });
-                            });
-
-                            restored = true;
-                            toast.success("Template loaded!");
-                          }
-                          
-                          // Fallback: try to restore from JSON snapshot stored next to the image
-                          if (!restored) {
-                            try {
-                              const jsonUrl = template.designUrl.replace(/\.png(\?.*)?$/, '.json');
-                              const resp = await fetch(jsonUrl);
-                              if (resp.ok) {
-                                const payload = await resp.json();
-                                const od = payload.orderDetails || {};
-
-                                // Restore settings
-                                setWristbandColor(od.wristband_color || template.wristbandColor);
-                                setWristbandType((od.wristband_type || template.wristbandType) as WristbandType);
-                                setQuantity(od.quantity || 1000);
-                                setPrintType(od.print_type || 'none');
-                                setHasPrint(od.has_print ?? (od.print_type !== 'none'));
-                                setHasTrademark(od.has_trademark || false);
-                                setTrademarkText(od.trademark_text || '');
-                                setTrademarkTextColor((od.trademark_text_color === 'white' || od.trademark_text_color === 'black') ? od.trademark_text_color : 'black');
-                                setHasQrCode(od.has_qr_code || false);
-
-                                fabricCanvas.backgroundColor = od.wristband_color || template.wristbandColor;
-
-                                await new Promise<void>((resolve) => {
-                                  fabricCanvas.loadFromJSON(payload.canvas || payload, () => {
-                                    fabricCanvas.getObjects().forEach(obj => {
-                                      if (obj.type === 'i-text' || obj.type === 'text') {
-                                        obj.set({ editable: true, selectable: true, evented: true });
-                                      } else if (obj.type === 'image') {
-                                        if ((obj as any).selectable !== false) {
-                                          obj.set({ selectable: true, evented: true });
-                                        }
-                                      }
-                                    });
-                                    fabricCanvas.renderAll();
-                                    resolve();
-                                  });
-                                });
-
-                                restored = true;
-                                toast.success('Template loaded with all elements!');
-                              }
-                            } catch (err) {
-                              console.warn('No JSON snapshot found for template, loading basic settings.', err);
-                            }
-
-                            if (!restored) {
-                              // Final fallback: basic settings only
-                              setWristbandColor(template.wristbandColor);
-                              setWristbandType(template.wristbandType as WristbandType);
-                              fabricCanvas.backgroundColor = template.wristbandColor;
-
-                              const customTextFromTemplate = (template as any).custom_text;
-                              const textColorFromTemplate = (template as any).text_color;
-                              if (customTextFromTemplate) {
-                                setTrademarkText(customTextFromTemplate);
-                                setHasTrademark(true);
-                                setTrademarkTextColor(textColorFromTemplate?.toLowerCase() === '#ffffff' ? 'white' : 'black');
-                              }
-
-                              fabricCanvas.renderAll();
-                              toast.info('Template loaded (basic settings only)');
-                            }
-                          }
-                        } catch (e) {
-                          console.error("Failed to load template:", e);
-                          toast.error("Failed to load template");
-                        } finally {
-                          // Reset flag after a delay to ensure all effects have completed
-                          setTimeout(() => {
-                            isLoadingTemplateRef.current = false;
-                          }, 100);
-                        }
+                      onClick={() => {
+                        const meta = template.metaJson ? JSON.parse(template.metaJson) : {};
+                        void restoreDesign(
+                          {
+                            wristbandColor: meta.wristbandColor ?? template.wristbandColor,
+                            wristbandType: meta.wristbandType ?? (template.wristbandType as WristbandType),
+                            quantity: meta.quantity,
+                            printType: meta.printType,
+                            hasPrint: meta.hasPrint,
+                            hasQrCode: meta.hasQrCode,
+                            hasTrademark: meta.hasTrademark,
+                            trademarkText: meta.trademarkText ?? template.customText ?? "",
+                            trademarkTextColor:
+                              meta.trademarkTextColor ??
+                              (template.textColor?.toLowerCase() === "#ffffff" ? "white" : "black"),
+                            supplierId: meta.supplierId,
+                            productId: meta.productId,
+                          },
+                          template.canvasJson,
+                        );
                       }}
                     >
-                      <img src={template.designUrl} alt="Template" className="w-full h-20 object-cover" />
+                      <img src={template.designUrl} alt="Saved mockup" className="w-full h-20 object-cover" />
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                        <span className="text-white text-xs">Click to edit</span>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1076,7 +1001,7 @@ const DesignStudio = () => {
                     <SelectValue placeholder="Choose a supplier" />
                   </SelectTrigger>
                   <SelectContent>
-                    {suppliers.map(s => (
+                    {suppliers.map((s) => (
                       <SelectItem key={s.id} value={s.id}>
                         {s.companyName}
                       </SelectItem>
@@ -1084,10 +1009,10 @@ const DesignStudio = () => {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground mt-1">
-                  You design here; the supplier sets prices (in their dashboard). Your totals update from their price book when you
-                  change options.
+                  The supplier sets prices; your total updates live from their price book.
                 </p>
               </div>
+
               {supplierProducts.length > 0 && (
                 <div>
                   <Label>Select Product</Label>
@@ -1095,67 +1020,72 @@ const DesignStudio = () => {
                     value={selectedProductId}
                     onValueChange={(id) => {
                       setSelectedProductId(id);
-                      const p = supplierProducts.find(p => p.id === id);
+                      const p = supplierProducts.find((x) => x.id === id);
                       if (p) {
                         setWristbandType(p.wristbandType as WristbandType);
                         setQuantity(p.minOrderQuantity || 1000);
                       }
                     }}
                   >
-                    <SelectTrigger className="mt-2"><SelectValue placeholder="Choose a product" /></SelectTrigger>
+                    <SelectTrigger className="mt-2">
+                      <SelectValue placeholder="Choose a product" />
+                    </SelectTrigger>
                     <SelectContent>
                       {supplierProducts.map((p: any) => (
                         <SelectItem key={p.id} value={p.id}>
-                          {p.name} ({p.wristbandType})
+                          {p.name} ({p.wristbandType}) — from {sym}
+                          {(p.priceEur ?? p.priceUsd)?.toFixed?.(3)}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {selectedProduct && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Starting at {sym}
+                      {(selectedProduct.priceEur ?? selectedProduct.priceUsd)?.toFixed?.(3)} / unit · min{" "}
+                      {selectedProduct.minOrderQuantity} pcs
+                    </p>
+                  )}
                 </div>
               )}
 
               <div className="border-t pt-4">
-                {(() => {
-                  const product = supplierProducts.find(p => p.id === selectedProductId);
-                  const minQty = product?.minOrderQuantity || pricing?.minQuantity || 1;
-                  const maxQty = product?.maxOrderQuantity;
-                  return (
-                    <>
-                      <Label>Quantity (Min {minQty} pcs{maxQty ? `, Max ${maxQty} pcs` : ""})</Label>
-                      <Input
-                        type="number"
-                        min={minQty}
-                        max={maxQty || undefined}
-                        step="100"
-                        value={quantity}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value) || minQty;
-                          setQuantity(maxQty ? Math.min(Math.max(val, minQty), maxQty) : Math.max(val, minQty));
-                        }}
-                        className="mt-2"
-                      />
-                    </>
-                  );
-                })()}
+                <Label>
+                  Quantity (Min {minQty} pcs{maxQty ? `, Max ${maxQty} pcs` : ""})
+                </Label>
+                <Input
+                  type="number"
+                  min={minQty}
+                  max={maxQty || undefined}
+                  step="100"
+                  value={quantity}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || minQty;
+                    setQuantity(maxQty ? Math.min(Math.max(val, minQty), maxQty) : Math.max(val, minQty));
+                  }}
+                  className="mt-2"
+                />
                 <Button
                   variant="default"
                   size="sm"
                   className="w-full mt-2"
-                onClick={() => {
-                  // Open new tab for creating another design
-                  window.open('/design-studio', '_blank');
-                  toast.success("New design window opened!");
-                }}
+                  onClick={() => {
+                    window.open("/design-studio", "_blank");
+                    toast.success("New design window opened");
+                  }}
                 >
                   <Plus className="h-4 w-4 mr-2" />
                   Add New Design
                 </Button>
-                <p className="text-xs text-muted-foreground mt-1">Opens a new tab to create another wristband design</p>
+                <p className="text-xs text-muted-foreground mt-1">Opens a new tab to design another wristband.</p>
               </div>
+
               <div>
                 <Label>Wristband Type</Label>
                 <Select value={wristbandType} onValueChange={(v: WristbandType) => setWristbandType(v)}>
-                  <SelectTrigger className="mt-2"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="mt-2">
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="silicone">Silicone</SelectItem>
                     <SelectItem value="fabric">Fabric</SelectItem>
@@ -1164,7 +1094,8 @@ const DesignStudio = () => {
                   </SelectContent>
                 </Select>
               </div>
-              {wristbandType === "tyvek" && (
+
+              {wristbandType === "tyvek" ? (
                 <div>
                   <Label>Tyvek Color</Label>
                   <div className="grid grid-cols-9 gap-2 mt-2">
@@ -1181,17 +1112,26 @@ const DesignStudio = () => {
                     ))}
                   </div>
                 </div>
-              )}
-              
-              {wristbandType !== "tyvek" && (
+              ) : (
                 <div>
                   <Label>Wristband Color</Label>
                   <div className="flex gap-2 mt-2">
-                    <Input type="color" value={wristbandColor} onChange={(e) => setWristbandColor(e.target.value)} className="w-20 h-10" />
-                    <Input type="text" value={wristbandColor} onChange={(e) => setWristbandColor(e.target.value)} className="flex-1" />
+                    <Input
+                      type="color"
+                      value={wristbandColor}
+                      onChange={(e) => setWristbandColor(e.target.value)}
+                      className="w-20 h-10"
+                    />
+                    <Input
+                      type="text"
+                      value={wristbandColor}
+                      onChange={(e) => setWristbandColor(e.target.value)}
+                      className="flex-1"
+                    />
                   </div>
                 </div>
               )}
+
               <div className="space-y-3">
                 <div className="flex items-center space-x-2">
                   <Checkbox
@@ -1203,16 +1143,37 @@ const DesignStudio = () => {
                       setPrintType(checked ? "full_color" : "none");
                     }}
                   />
-                  <Label htmlFor="print" className="cursor-pointer">Add Print (included in base price)</Label>
+                  <Label htmlFor="print" className="cursor-pointer">
+                    Add Print
+                  </Label>
                 </div>
+
+                <div className="flex items-center space-x-2">
+                  <Checkbox id="qr-code" checked={hasQrCode} onCheckedChange={(c) => setHasQrCode(c as boolean)} />
+                  <Label htmlFor="qr-code" className="cursor-pointer">
+                    Add QR Code (emergency / secure)
+                    {selectedProduct?.qrCodePriceUsd > 0 && (
+                      <span className="text-muted-foreground ml-1 text-xs">
+                        +{sym}
+                        {(selectedProduct.qrCodePriceEur ?? selectedProduct.qrCodePriceUsd).toFixed(3)}/unit
+                      </span>
+                    )}
+                  </Label>
+                </div>
+
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    <Checkbox id="trademark" checked={hasTrademark} onCheckedChange={(c) => setHasTrademark(c as boolean)} />
+                    <Checkbox
+                      id="trademark"
+                      checked={hasTrademark}
+                      onCheckedChange={(c) => setHasTrademark(c as boolean)}
+                    />
                     <Label htmlFor="trademark" className="cursor-pointer">
-                      Add Trademark Text
-                      {pricing && supplierConfigs.find(c => c.wristbandType === wristbandType) && (
+                      Add Trademark (vertical, right of QR)
+                      {selectedProduct?.trademarkFeeUsd > 0 && (
                         <span className="text-muted-foreground ml-1 text-xs">
-                          (+{currency === "USD" ? "$" : currency === "GBP" ? "£" : "€"}{(supplierConfigs.find(c => c.wristbandType === wristbandType)!.blackPrintExtraEur * 1000).toFixed(2)} / 1000 pcs)
+                          +{sym}
+                          {(selectedProduct.trademarkFeeEur ?? selectedProduct.trademarkFeeUsd).toFixed(2)} one-time
                         </span>
                       )}
                     </Label>
@@ -1224,228 +1185,242 @@ const DesignStudio = () => {
                         maxLength={15}
                         value={trademarkText}
                         onChange={(e) => setTrademarkText(e.target.value)}
-                        placeholder="Web address (max 15 letters)"
+                        placeholder="Web address (max 15 chars)"
                       />
                       <div className="flex items-center gap-4">
                         <Label>Text Color:</Label>
-                        <RadioGroup value={trademarkTextColor} onValueChange={(v) => setTrademarkTextColor(v as "white" | "black")} className="flex gap-4">
+                        <RadioGroup
+                          value={trademarkTextColor}
+                          onValueChange={(v) => setTrademarkTextColor(v as "white" | "black")}
+                          className="flex gap-4"
+                        >
                           <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="white" id="white" />
-                            <Label htmlFor="white" className="cursor-pointer">White</Label>
+                            <RadioGroupItem value="white" id="tm-white" />
+                            <Label htmlFor="tm-white" className="cursor-pointer">
+                              White
+                            </Label>
                           </div>
                           <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="black" id="black" />
-                            <Label htmlFor="black" className="cursor-pointer">Black</Label>
+                            <RadioGroupItem value="black" id="tm-black" />
+                            <Label htmlFor="tm-black" className="cursor-pointer">
+                              Black
+                            </Label>
                           </div>
                         </RadioGroup>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Select value={tmFont} onValueChange={setTmFont}>
+                          <SelectTrigger className="h-8 flex-1" style={{ fontFamily: tmFont }}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {FONT_OPTIONS.map((f) => (
+                              <SelectItem key={f} value={f} style={{ fontFamily: f }}>
+                                {f}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant={tmBold ? "default" : "outline"}
+                          size="sm"
+                          className="font-bold w-9"
+                          onClick={() => setTmBold((v) => !v)}
+                        >
+                          B
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={tmItalic ? "default" : "outline"}
+                          size="sm"
+                          className="italic w-9"
+                          onClick={() => setTmItalic((v) => !v)}
+                        >
+                          I
+                        </Button>
                       </div>
                     </div>
                   )}
                 </div>
-                <div className="flex items-center space-x-2">
-                  <Checkbox id="qr-code" checked={hasQrCode} onCheckedChange={(c) => setHasQrCode(c as boolean)} />
-                  <Label htmlFor="qr-code" className="cursor-pointer">
-                    Add QR Code - Emergency
-                    {pricing && supplierConfigs.find(c => c.wristbandType === wristbandType) && (
-                      <span className="text-muted-foreground ml-1 text-xs">
-                        (+{currency === "USD" ? "$" : currency === "GBP" ? "£" : "€"}{(supplierConfigs.find(c => c.wristbandType === wristbandType)!.secureGuestsExtraEur * 1000).toFixed(2)} / 1000 pcs)
-                      </span>
-                    )}
-                  </Label>
-                </div>
               </div>
-              <div>
-                <Label>Upload Your Design (Optional)</Label>
-                <Input type="file" accept="image/*" onChange={handleImageUpload} className="mt-2" />
-                <p className="text-xs text-muted-foreground mt-1">Max 5MB. Logo will be centered and cropped within diecut lines. Select logo and click 'Duplicate Logo' to add more.</p>
-              </div>
-              <div>
-                <Label>Add Custom Text</Label>
-                <div className="space-y-2">
-                  <div className="flex gap-2">
-                    <Input
-                      type="text"
-                      value={customText}
-                      onChange={(e) => setCustomText(e.target.value)}
-                      placeholder="Enter your text"
-                      onKeyDown={(e) => e.key === "Enter" && handleAddText()}
-                    />
-                    <Input
-                      type="color"
-                      className="w-20"
-                      id="textColor"
-                      defaultValue="#000000"
-                    />
-                    <Button onClick={handleAddText} variant="outline">
-                      Add Text
-                    </Button>
+
+              {/* Logo + background uploads appear once "Add Print" is enabled. */}
+              {hasPrint && (
+                <div className="space-y-4 border rounded-lg p-3 bg-secondary/10">
+                  <div>
+                    <Label>Upload Your Logo</Label>
+                    <Input type="file" accept="image/*" onChange={handleImageUpload} className="mt-2" />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Up to 15MB. Logo is clipped to the print area. Select it and click 'Duplicate Logo' to repeat.
+                    </p>
+                  </div>
+                  <div>
+                    <Label>Upload Wristband Background</Label>
+                    <div className="flex gap-2 mt-2">
+                      <Input type="file" accept="image/*" onChange={handleBackgroundUpload} className="flex-1" />
+                      <Button variant="outline" size="sm" onClick={clearBackgroundImage}>
+                        Remove
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Stretched across the whole band as the printed background (the QR/trademark tab stays white).
+                    </p>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">Click text on canvas to edit, drag to position. Select object and press Delete to remove.</p>
+              )}
+
+              <div>
+                <Label>Add Custom Text</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input
+                    type="text"
+                    value={customText}
+                    onChange={(e) => setCustomText(e.target.value)}
+                    placeholder="Enter your text"
+                    onKeyDown={(e) => e.key === "Enter" && handleAddText()}
+                  />
+                  <Button onClick={handleAddText} variant="default">
+                    Add
+                  </Button>
+                </div>
+
+                {/* Style toolbar — applies to new text and to the selected text. */}
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <Select
+                    value={textFont}
+                    onValueChange={(v) => {
+                      setTextFont(v);
+                      styleActiveText({ fontFamily: v });
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-40" style={{ fontFamily: textFont }}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FONT_OPTIONS.map((f) => (
+                        <SelectItem key={f} value={f} style={{ fontFamily: f }}>
+                          {f}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    type="number"
+                    min={8}
+                    max={120}
+                    value={textSize}
+                    onChange={(e) => {
+                      const s = parseInt(e.target.value) || 12;
+                      setTextSize(s);
+                      styleActiveText({ fontSize: s });
+                    }}
+                    className="h-8 w-20"
+                    title="Font size"
+                  />
+                  <Button
+                    type="button"
+                    variant={textBold ? "default" : "outline"}
+                    size="sm"
+                    className="font-bold w-9"
+                    onClick={() => {
+                      const v = !textBold;
+                      setTextBold(v);
+                      styleActiveText({ fontWeight: v ? "bold" : "normal" });
+                    }}
+                  >
+                    B
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={textItalic ? "default" : "outline"}
+                    size="sm"
+                    className="italic w-9"
+                    onClick={() => {
+                      const v = !textItalic;
+                      setTextItalic(v);
+                      styleActiveText({ fontStyle: v ? "italic" : "normal" });
+                    }}
+                  >
+                    I
+                  </Button>
+                  <Input
+                    type="color"
+                    className="h-8 w-12 p-1"
+                    value={textColor}
+                    onChange={(e) => {
+                      setTextColor(e.target.value);
+                      styleActiveText({ fill: e.target.value });
+                    }}
+                    title="Text colour"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Pick a font, size, weight and colour. Select any text on the canvas to restyle it; drag to position.
+                </p>
               </div>
-<div className="bg-secondary/20 p-4 rounded-lg space-y-2">
-  <h3 className="font-semibold text-lg mb-3">Order Summary</h3>
-  {loadingPrice ? (
-    <div className="flex items-center justify-center py-4">
-      <Loader2 className="h-6 w-6 animate-spin" />
-    </div>
-  ) : pricing ? (
-    <>
-      <div className="flex justify-between text-sm">
-        <span>Base Price (per unit):</span>
-        <span>{currencySymbol}{(pricing.basePrice || 0).toFixed(3)}</span>
-      </div>
 
-      {pricing.extraCharges.trademark && (
-        <div className="flex justify-between text-sm">
-          <span>Trademark Text:</span>
-          <span>+{currencySymbol}{pricing.extraCharges.trademark.toFixed(2)}</span>
-        </div>
-      )}
+              <div className="bg-secondary/20 p-4 rounded-lg space-y-2">
+                <h3 className="font-semibold text-lg mb-3">Order Summary</h3>
+                {loadingPrice ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  </div>
+                ) : quote ? (
+                  <>
+                    {quote.components.map((c) => (
+                      <div key={c.code} className="flex justify-between text-sm">
+                        <span>
+                          {c.label}
+                          {c.kind === "per_unit" ? ` (${sym}${c.unitAmount.toFixed(3)} × ${c.quantity})` : ""}:
+                        </span>
+                        <span>
+                          {c.code === "base" ? "" : "+"}
+                          {sym}
+                          {c.amount.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="border-t pt-2 mt-2">
+                      <div className="flex justify-between font-medium">
+                        <span>Unit Price:</span>
+                        <span>
+                          {sym}
+                          {quote.unitPrice.toFixed(3)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span>Quantity:</span>
+                        <span>{quote.quantity} pcs</span>
+                      </div>
+                    </div>
+                    <div className="flex justify-between text-lg font-bold border-t pt-2 text-primary">
+                      <span>Total:</span>
+                      <span>
+                        {sym}
+                        {quote.total.toFixed(2)}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    {selectedProductId
+                      ? "Adjust quantity/options to see pricing (check the minimum quantity)."
+                      : selectedSupplierId
+                        ? "This supplier has no products yet."
+                        : "Select a supplier and product to see pricing."}
+                  </p>
+                )}
+              </div>
 
-      {pricing.extraCharges.print && (
-        <div className="flex justify-between text-sm">
-          <span>Print:</span>
-          <span>+{currencySymbol}{pricing.extraCharges.print.toFixed(2)}</span>
-        </div>
-      )}
-
-      {pricing.extraCharges.qrCode && (
-        <div className="flex justify-between text-sm">
-          <span>QR Code:</span>
-          <span>+{currencySymbol}{pricing.extraCharges.qrCode.toFixed(2)}</span>
-        </div>
-      )}
-
-      <div className="border-t pt-2 mt-2">
-        <div className="flex justify-between font-medium">
-          <span>Unit Price:</span>
-          <span>{currencySymbol}{(pricing.unitPrice || 0).toFixed(3)}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span>Quantity:</span>
-          <span>{quantity} pcs</span>
-        </div>
-      </div>
-
-      <div className="flex justify-between text-lg font-bold border-t pt-2 text-primary">
-        <span>Total:</span>
-        <span>{currencySymbol}{(pricing.totalPrice || 0).toFixed(2)}</span>
-      </div>
-    </>
-  ) : (
-    <p className="text-sm text-muted-foreground text-center py-4">
-      {selectedSupplierId
-        ? "This supplier has no pricing configured for the selected wristband type."
-        : "Select a supplier to see pricing."}
-    </p>
-  )}
-</div>
-
-              <Button 
-                onClick={async () => {
-                  // Check if this is opened in a new tab (for "Add New Design" flow)
-                  const isNewTab = window.opener !== null;
-                  
-                  if (isNewTab) {
-                    // Add to cart functionality
-                    if (!fabricCanvas || !pricing) {
-                      toast.error("Please create a design first");
-                      return;
-                    }
-                    
-                    setSaving(true);
-                    try {
-                      const user = await getCurrentUser();
-                      if (!user) {
-                        toast.error("Please sign in to add to cart");
-                        navigate("/auth");
-                        return;
-                      }
-
-                      const dataUrl = fabricCanvas.toDataURL({ format: "png", quality: 1, multiplier: 2 });
-                      const publicUrl = await uploadDesignImage(dataUrl);
-                      
-                      const jsonPayload = {
-                        canvas: fabricCanvas.toJSON(),
-                        orderDetails: {
-                          quantity,
-                          total_price: pricing.totalPrice,
-                          unit_price: pricing.unitPrice,
-                          currency,
-                          wristband_type: wristbandType,
-                          wristband_color: wristbandColor,
-                          print_type: printType,
-                          has_trademark: hasTrademark,
-                          trademark_text: trademarkText,
-                          trademark_text_color: trademarkTextColor,
-                          has_qr_code: hasQrCode,
-                          has_print: hasPrint,
-                          supplierId: selectedSupplierId,
-                          productId: selectedProductId || null,
-                        },
-                        saved_at: new Date().toISOString(),
-                      };
-                      
-                      // Save to database and capture the design ID
-                      const savedDesign = await apiFetch("/designs", {
-                        method: "POST",
-                        body: JSON.stringify({
-                          designUrl: publicUrl,
-                          wristbandColor,
-                          wristbandType,
-                          customText: trademarkText || "",
-                          textColor: trademarkTextColor === "white" ? "#FFFFFF" : "#000000",
-                        }),
-                      });
-                      const savedDesignId: string = savedDesign?.id;
-
-                      // Save as a DRAFT order in the database
-                      const od = jsonPayload.orderDetails;
-                      await apiFetch("/orders", {
-                        method: "POST",
-                        body: JSON.stringify({
-                          designId: savedDesignId,
-                          supplierId: od.supplierId || undefined,
-                          productId: od.productId || undefined,
-                          quantity: od.quantity,
-                          totalPrice: od.total_price,
-                          unitPrice: od.unit_price,
-                          currency: od.currency,
-                          wristbandType: od.wristband_type,
-                          printType: od.print_type,
-                          status: "DRAFT",
-                          paymentStatus: "pending",
-                          customizationNotes: JSON.stringify({
-                            wristband_color: od.wristband_color,
-                            has_trademark: od.has_trademark,
-                            trademark_text: od.trademark_text,
-                            trademark_text_color: od.trademark_text_color,
-                            has_qr_code: od.has_qr_code,
-                            has_print: od.has_print,
-                          }),
-                        }),
-                      });
-
-                      toast.success("Design added to cart! You can close this tab.");
-                      setTimeout(() => { window.close(); }, 2000);
-                    } catch (error: any) {
-                      console.error("Failed to add to cart:", error);
-                      toast.error("Failed to add design to cart");
-                    } finally {
-                      setSaving(false);
-                    }
-                  } else {
-                    // Original "Continue to Summary" functionality
-                    handlePlaceOrder();
-                  }
-                }}
-                disabled={saving || !pricing} 
-                variant="hero" 
+              <Button
+                onClick={() => submitOrder(isNewTab)}
+                disabled={saving || !quote}
+                variant="hero"
                 className="w-full"
               >
                 <ShoppingCart className="h-4 w-4 mr-2" />
-                {window.opener !== null ? "Add to Cart" : "Continue to Summary"}
+                {isNewTab ? "Add to Cart" : "Continue to Summary"}
               </Button>
             </div>
           </Card>

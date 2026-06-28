@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model Profile {
@@ -19,8 +19,41 @@ model Profile {
   supplier   Supplier?
   roles      UserRole[]
   designs    Design[]
+  reviews    Review[]
+  cart       Cart?
 
   @@map("profiles")
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique @map("user_id")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  user  Profile    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id            String   @id @default(uuid())
+  cartId        String   @map("cart_id")
+  designId      String?  @map("design_id")
+  productId     String?  @map("product_id")
+  supplierId    String?  @map("supplier_id")
+  quantity      Int
+  currency      String   @default("EUR")
+  optionsJson   String?  @map("options_json")
+  priceSnapshot Float    @default(0) @map("price_snapshot")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  cart   Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  design Design? @relation(fields: [designId], references: [id])
+
+  @@index([cartId])
+  @@map("cart_items")
 }
 
 model Order {
@@ -115,6 +148,9 @@ model Design {
   clipArtPosition   String?   @map("clip_art_position")
 
   canvasJson        String?   @map("canvas_json")
+  // Full customization snapshot (options, pricing, supplier/product) as JSON.
+  // Lets the studio restore a design exactly and the supplier see every detail.
+  metaJson          String?   @map("meta_json")
 
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
@@ -123,6 +159,7 @@ model Design {
   product      Product?      @relation(fields: [productId], references: [id])
   orders       Order[]
   designImages DesignImage[]
+  cartItems    CartItem[]
 
   @@map("designs")
 }
@@ -158,6 +195,7 @@ model Supplier {
   city          String?
   country       String?
   rating        Float    @default(0)
+  reviewCount   Int      @default(0) @map("review_count")
   totalOrders   Int      @default(0) @map("total_orders")
   isVerified    Boolean  @default(false) @map("is_verified")
 
@@ -168,8 +206,25 @@ model Supplier {
   orders         Order[]
   products       Product[]
   pricingConfigs PricingConfig[]
+  reviews        Review[]
 
   @@map("suppliers")
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  supplierId String   @map("supplier_id")
+  userId     String   @map("user_id")
+  orderId    String?  @map("order_id")
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user     Profile  @relation(fields: [userId], references: [id])
+
+  @@index([supplierId])
+  @@map("reviews")
 }
 
 model Product {
@@ -188,6 +243,22 @@ model Product {
   printExtraUsd      Float @default(0) @map("print_extra_usd")
   colorPrintExtraUsd Float @default(0) @map("color_print_extra_usd")
   logoExtraUsd       Float @default(0) @map("logo_extra_usd")
+
+  // Dynamic pricing engine add-ons (per-currency)
+  // Design setup: one-time flat fee applied per order when a custom design is used
+  designSetupFeeUsd Float  @default(0) @map("design_setup_fee_usd")
+  designSetupFeeEur Float? @map("design_setup_fee_eur")
+  designSetupFeeGbp Float? @map("design_setup_fee_gbp")
+
+  // QR code: charged per unit (per wristband) when QR is enabled
+  qrCodePriceUsd Float  @default(0) @map("qr_code_price_usd")
+  qrCodePriceEur Float? @map("qr_code_price_eur")
+  qrCodePriceGbp Float? @map("qr_code_price_gbp")
+
+  // Trademark / branding: one-time flat fee applied per order when enabled
+  trademarkFeeUsd Float  @default(0) @map("trademark_fee_usd")
+  trademarkFeeEur Float? @map("trademark_fee_eur")
+  trademarkFeeGbp Float? @map("trademark_fee_gbp")
 
   minOrderQuantity Int      @default(1) @map("min_order_quantity")
   maxOrderQuantity Int?     @map("max_order_quantity")

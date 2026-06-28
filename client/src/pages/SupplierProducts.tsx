@@ -39,6 +39,13 @@ interface Product {
   allowsCustomText: boolean;
   allowsCustomColor: boolean;
   allowsLogoUpload: boolean;
+  // Customization add-on pricing (read by the dynamic pricing engine)
+  printExtraUsd: number;
+  colorPrintExtraUsd: number;
+  logoExtraUsd: number;
+  designSetupFeeUsd: number;
+  qrCodePriceUsd: number;
+  trademarkFeeUsd: number;
   pricingTiers: PricingTier[];
 }
 
@@ -55,6 +62,12 @@ const EMPTY_PRODUCT: Product = {
   allowsCustomText: true,
   allowsCustomColor: true,
   allowsLogoUpload: true,
+  printExtraUsd: 0,
+  colorPrintExtraUsd: 0,
+  logoExtraUsd: 0,
+  designSetupFeeUsd: 0,
+  qrCodePriceUsd: 0,
+  trademarkFeeUsd: 0,
   pricingTiers: [],
 };
 
@@ -222,11 +235,15 @@ const SupplierProducts = () => {
                       {product.maxOrderQuantity && <span>Max Qty: <strong>{product.maxOrderQuantity}</strong></span>}
                       <span>Base: <strong>${product.priceUsd}</strong>{product.priceEur ? ` / €${product.priceEur}` : ""}</span>
                     </div>
-                    {product.pricingTiers?.length > 0 && (
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        {product.pricingTiers.length} quantity tier{product.pricingTiers.length !== 1 ? "s" : ""}
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-muted-foreground">
+                      {product.qrCodePriceUsd > 0 && <span>QR: +${product.qrCodePriceUsd}/unit</span>}
+                      {product.designSetupFeeUsd > 0 && <span>Design: +${product.designSetupFeeUsd}</span>}
+                      {product.trademarkFeeUsd > 0 && <span>Trademark: +${product.trademarkFeeUsd}</span>}
+                      {product.colorPrintExtraUsd > 0 && <span>Colour print: +${product.colorPrintExtraUsd}/unit</span>}
+                      {product.pricingTiers?.length > 0 && (
+                        <span>{product.pricingTiers.length} quantity tier{product.pricingTiers.length !== 1 ? "s" : ""}</span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => openEdit(product)}>
@@ -305,6 +322,40 @@ const SupplierProducts = () => {
                 <div className="space-y-1">
                   <Label>GBP (£)</Label>
                   <Input type="number" step="0.001" value={editingProduct.priceGbp ?? ""} onChange={e => updateField("priceGbp", e.target.value === "" ? null : parseFloat(e.target.value))} />
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t pt-4">
+              <h4 className="font-medium mb-1">Customization Add-on Pricing (USD)</h4>
+              <p className="text-xs text-muted-foreground mb-3">
+                Charges added on top of the base price when a customer enables these options.
+                Per-unit charges are multiplied by quantity; one-time fees are charged once per order.
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label>Black print / unit</Label>
+                  <Input type="number" step="0.001" value={editingProduct.printExtraUsd} onChange={e => updateField("printExtraUsd", parseFloat(e.target.value) || 0)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Full-colour print / unit</Label>
+                  <Input type="number" step="0.001" value={editingProduct.colorPrintExtraUsd} onChange={e => updateField("colorPrintExtraUsd", parseFloat(e.target.value) || 0)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Logo printing / unit</Label>
+                  <Input type="number" step="0.001" value={editingProduct.logoExtraUsd} onChange={e => updateField("logoExtraUsd", parseFloat(e.target.value) || 0)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>QR code / unit</Label>
+                  <Input type="number" step="0.001" value={editingProduct.qrCodePriceUsd} onChange={e => updateField("qrCodePriceUsd", parseFloat(e.target.value) || 0)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Custom design setup (one-time)</Label>
+                  <Input type="number" step="0.01" value={editingProduct.designSetupFeeUsd} onChange={e => updateField("designSetupFeeUsd", parseFloat(e.target.value) || 0)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Trademark / branding (one-time)</Label>
+                  <Input type="number" step="0.01" value={editingProduct.trademarkFeeUsd} onChange={e => updateField("trademarkFeeUsd", parseFloat(e.target.value) || 0)} />
                 </div>
               </div>
             </div>

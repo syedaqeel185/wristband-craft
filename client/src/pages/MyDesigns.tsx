@@ -10,8 +10,11 @@ interface Design {
   id: string;
   designUrl: string;
   wristbandColor: string;
+  wristbandType?: string | null;
   customText: string | null;
   textColor: string;
+  canvasJson?: string | null;
+  metaJson?: string | null;
   createdAt: string;
 }
 
@@ -49,17 +52,22 @@ const MyDesigns = () => {
     navigate("/design-studio", {
       state: {
         editDesign: {
-          orderDetails: {
-            wristband_color: design.wristbandColor,
-            wristband_type: "tyvek",
-            quantity: 1000,
-            print_type: "none",
-            has_trademark: false,
-            trademark_text: design.customText || "",
-            trademark_text_color: design.textColor === "#FFFFFF" ? "white" : "black",
-            has_qr_code: false,
-            has_print: false,
-          },
+          // Prefer the full snapshot; fall back to basic fields for legacy designs.
+          metaJson: design.metaJson || undefined,
+          canvasJson: design.canvasJson || undefined,
+          orderDetails: design.metaJson
+            ? undefined
+            : {
+                wristband_color: design.wristbandColor,
+                wristband_type: design.wristbandType || "tyvek",
+                quantity: 1000,
+                print_type: "none",
+                has_trademark: !!design.customText,
+                trademark_text: design.customText || "",
+                trademark_text_color: design.textColor === "#FFFFFF" ? "white" : "black",
+                has_qr_code: false,
+                has_print: false,
+              },
           designUrl: design.designUrl,
           designId: design.id,
         },

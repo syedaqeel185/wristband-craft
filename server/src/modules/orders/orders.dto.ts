@@ -13,6 +13,10 @@ export class CreateOrderDto {
   @IsString()
   supplierId?: string;
 
+  @IsOptional()
+  @IsString()
+  productId?: string;
+
   @IsNumber()
   quantity: number;
 

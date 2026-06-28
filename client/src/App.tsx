@@ -14,9 +14,11 @@ import AdminPasswordReset from "./pages/AdminPasswordReset";
 import SupplierLogin from "./pages/SupplierLogin";
 import SupplierSignup from "./pages/SupplierSignup";
 import PaymentSuccess from "./pages/PaymentSuccess";
+import ConfirmOrder from "./pages/ConfirmOrder";
 import OrderSummary from "./pages/OrderSummary";
 import Address from "./pages/Address";
 import ProtectedRoute from "./components/ProtectedRoute";
+import { ReviewPrompt } from "./components/ReviewPrompt";
 import NotFound from "./pages/NotFound";
 import SupplierPricing from "./pages/SupplierPricing";
 import SupplierDesigns from "./pages/SupplierDesigns";
@@ -33,12 +35,14 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <ReviewPrompt />
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/auth" element={<Auth />} />
           <Route path="/supplier-login" element={<SupplierLogin />} />
           <Route path="/supplier-signup" element={<SupplierSignup />} />
           <Route path="/payment-success" element={<PaymentSuccess />} />
+          <Route path="/confirm-order" element={<ConfirmOrder />} />
           <Route
             path="/dashboard"
             element={

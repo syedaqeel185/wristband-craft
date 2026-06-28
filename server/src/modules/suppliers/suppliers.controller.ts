@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { SuppliersService } from './suppliers.service';
-import { SupplierRegisterDto } from './suppliers.dto';
+import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
 
 @Controller('suppliers')
 export class SuppliersController {
@@ -11,6 +11,12 @@ export class SuppliersController {
   register(@Body() dto: SupplierRegisterDto) {
     return this.suppliersService.register(dto);
   }
+
+  // ---- Authenticated "me" (current supplier) routes ----
+  // IMPORTANT: these static routes MUST be declared before the parametric
+  // ":id/..." routes below. Express/Nest matches in declaration order, so if
+  // ":id/products" came first, "me" would be captured as an :id param and the
+  // current supplier's own products would never be returned.
 
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
@@ -24,30 +30,10 @@ export class SuppliersController {
     return this.suppliersService.getPricing(req.user.id);
   }
 
-  @Get(':supplierId/pricing')
-  getPricingForSupplier(@Param('supplierId') supplierId: string) {
-    return this.suppliersService.getPricingForSupplier(supplierId);
-  }
-
-  @Get()
-  list() {
-    return this.suppliersService.findAll();
-  }
-
   @UseGuards(AuthGuard('jwt'))
   @Post('me/pricing')
   updatePricing(@Request() req: any, @Body() dto: any) {
     return this.suppliersService.updatePricing(req.user.id, dto);
-  }
-
-  @Get(':id/pricing')
-  getSupplierPricing(@Param('id') id: string) {
-    return this.suppliersService.getPricingBySupplierId(id);
-  }
-
-  @Get(':id/products')
-  getSupplierProducts(@Param('id') id: string) {
-    return this.suppliersService.getProductsBySupplierId(id);
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -72,5 +58,58 @@ export class SuppliersController {
   @Delete('me/products/:productId')
   deleteProduct(@Request() req: any, @Param('productId') productId: string) {
     return this.suppliersService.deleteProduct(req.user.id, productId);
+  }
+
+  // ---- Reviews (current user) ----
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('pending-reviews')
+  pendingReviews(@Request() req: any) {
+    return this.suppliersService.pendingReviews(req.user.id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('recent')
+  recent(@Request() req: any) {
+    return this.suppliersService.recentlyOrdered(req.user.id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get(':id/can-review')
+  canReview(@Request() req: any, @Param('id') id: string) {
+    return this.suppliersService.canReview(req.user.id, id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post(':id/reviews')
+  createReview(@Request() req: any, @Param('id') id: string, @Body() dto: CreateReviewDto) {
+    return this.suppliersService.createReview(req.user.id, id, dto);
+  }
+
+  // ---- Public listing + parametric routes ----
+
+  @Get('directory')
+  directory() {
+    return this.suppliersService.directory();
+  }
+
+  @Get()
+  list() {
+    return this.suppliersService.findAll();
+  }
+
+  @Get(':id/reviews')
+  getReviews(@Param('id') id: string) {
+    return this.suppliersService.getReviews(id);
+  }
+
+  @Get(':id/pricing')
+  getPricingForSupplier(@Param('id') id: string) {
+    return this.suppliersService.getPricingForSupplier(id);
+  }
+
+  @Get(':id/products')
+  getSupplierProducts(@Param('id') id: string) {
+    return this.suppliersService.getProductsBySupplierId(id);
   }
 }

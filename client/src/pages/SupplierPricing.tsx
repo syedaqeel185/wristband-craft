@@ -32,6 +32,8 @@ interface PricingConfig {
   secureGuestsExtraEur: number;
 }
 
+const WRISTBAND_TYPES = ["tyvek", "silicone", "fabric", "vinyl", "event"] as const;
+
 const EMPTY_CONFIG: PricingConfig = {
   wristbandType: "tyvek",
   minQuantity: 0,
@@ -47,6 +49,9 @@ const EMPTY_CONFIG: PricingConfig = {
   secureGuestsExtraUsd: 0,
   secureGuestsExtraEur: 0,
 };
+
+// Default used when the supplier adds a brand-new wristband type tab.
+const DEFAULT_CONFIG: PricingConfig = EMPTY_CONFIG;
 
 const SupplierPricing = () => {
   const navigate = useNavigate();
