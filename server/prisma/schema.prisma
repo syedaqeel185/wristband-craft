@@ -1,0 +1,342 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Profile {
+  id                String     @id @default(uuid())
+  email             String     @unique
+  password          String
+  fullName          String?    @map("full_name")
+  isVerified        Boolean    @default(false) @map("is_verified")
+  verificationToken String?    @map("verification_token")
+  createdAt         DateTime   @default(now()) @map("created_at")
+
+  orders     Order[]
+  supplier   Supplier?
+  roles      UserRole[]
+  designs    Design[]
+  reviews    Review[]
+  cart       Cart?
+
+  @@map("profiles")
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique @map("user_id")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  user  Profile    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id            String   @id @default(uuid())
+  cartId        String   @map("cart_id")
+  designId      String?  @map("design_id")
+  productId     String?  @map("product_id")
+  supplierId    String?  @map("supplier_id")
+  quantity      Int
+  currency      String   @default("EUR")
+  optionsJson   String?  @map("options_json")
+  priceSnapshot Float    @default(0) @map("price_snapshot")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  cart   Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  design Design? @relation(fields: [designId], references: [id])
+
+  @@index([cartId])
+  @@map("cart_items")
+}
+
+model Order {
+  id                     String    @id @default(uuid())
+  userId                 String    @map("user_id")
+  designId               String?   @map("design_id")
+  supplierId             String?   @map("supplier_id")
+  productId              String?   @map("product_id")
+
+  quantity               Int
+  totalPrice             Float     @map("total_price")
+  unitPrice              Float?    @map("unit_price")
+  basePrice              Float?    @map("base_price")
+
+  status                 String
+  paymentStatus          String?   @map("payment_status")
+  currency               String
+
+  printType              String?   @map("print_type")
+  hasSecureGuests        Boolean?  @map("has_secure_guests")
+
+  shippingAddress        String?   @map("shipping_address")
+  extraCharges           String?   @map("extra_charges")
+  adminNotes             String?   @map("admin_notes")
+  customizationNotes     String?   @map("customization_notes")
+  wristbandSize          String?   @map("wristband_size")
+
+  stripePaymentIntentId  String?   @map("stripe_payment_intent_id")
+  stripeSessionId        String?   @map("stripe_session_id")
+  trackingNumber         String?   @map("tracking_number")
+  trackingUrl            String?   @map("tracking_url")
+  courier                String?
+  estimatedDelivery      DateTime? @map("estimated_delivery")
+  shippedAt              DateTime? @map("shipped_at")
+  deliveredAt            DateTime? @map("delivered_at")
+  pricingSnapshotJson    String?   @map("pricing_snapshot_json")
+  designSnapshotJson     String?   @map("design_snapshot_json")
+
+  createdAt              DateTime  @default(now()) @map("created_at")
+
+  user       Profile   @relation(fields: [userId], references: [id])
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+  design     Design?   @relation(fields: [designId], references: [id])
+  product    Product?  @relation(fields: [productId], references: [id])
+  statusHistory OrderStatusHistory[]
+
+  @@map("orders")
+}
+
+model OrderStatusHistory {
+  id          String   @id @default(uuid())
+  orderId     String   @map("order_id")
+  fromStatus  String?  @map("from_status")
+  toStatus    String   @map("to_status")
+  note        String?
+  updatedByUserId String? @map("updated_by_user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_status_history")
+}
+
+model Design {
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  productId         String?   @map("product_id")
+  designName        String?   @map("design_name")
+
+  designUrl         String    @map("design_url")
+  customText        String?   @map("custom_text")
+  textColor         String?   @map("text_color")
+  textPosition      String?   @map("text_position")
+  fontFamily        String?   @default("Arial") @map("font_family")
+  fontSize          Int?      @default(14) @map("font_size")
+
+  logoUrl           String?   @map("logo_url")
+  logoPosition      String?   @map("logo_position")
+  logoScale         Float?    @default(1.0) @map("logo_scale")
+
+  wristbandColor    String?   @map("wristband_color")
+  wristbandType     String?   @map("wristband_type")
+  wristbandSize     String?   @default("M") @map("wristband_size")
+  customWidthMm     Float?    @map("custom_width_mm")
+
+  innerText         String?   @map("inner_text")
+  innerTextColor    String?   @default("#FFFFFF") @map("inner_text_color")
+  pattern           String?   @default("solid")
+  secondaryColor    String?   @map("secondary_color")
+
+  clipArtId         String?   @map("clip_art_id")
+  clipArtPosition   String?   @map("clip_art_position")
+
+  canvasJson        String?   @map("canvas_json")
+  // Full customization snapshot (options, pricing, supplier/product) as JSON.
+  // Lets the studio restore a design exactly and the supplier see every detail.
+  metaJson          String?   @map("meta_json")
+
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  user         Profile       @relation(fields: [userId], references: [id])
+  product      Product?      @relation(fields: [productId], references: [id])
+  orders       Order[]
+  designImages DesignImage[]
+  cartItems    CartItem[]
+
+  @@map("designs")
+}
+
+model DesignImage {
+  id         String @id @default(uuid())
+  designId   String @map("design_id")
+  imageUrl   String @map("image_url")
+  imageType  String @default("logo") @map("image_type") // logo, clip_art, pattern, background
+  position   String @default("{\"x\": 50, \"y\": 50}")
+  scale      Float  @default(1.0)
+  rotation   Float  @default(0)
+  layerOrder Int    @default(0) @map("layer_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@map("design_images")
+}
+
+model Supplier {
+  id            String   @id @default(uuid())
+  userId        String   @unique @map("user_id")
+
+  companyName   String   @map("company_name")
+  contactEmail  String   @map("contact_email")
+  contactPhone  String?  @map("contact_phone")
+  address       String?  @map("address")
+  logoUrl       String?  @map("logo_url")
+  description   String?
+  website       String?
+  city          String?
+  country       String?
+  rating        Float    @default(0)
+  reviewCount   Int      @default(0) @map("review_count")
+  totalOrders   Int      @default(0) @map("total_orders")
+  isVerified    Boolean  @default(false) @map("is_verified")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user           Profile         @relation(fields: [userId], references: [id])
+  orders         Order[]
+  products       Product[]
+  pricingConfigs PricingConfig[]
+  reviews        Review[]
+
+  @@map("suppliers")
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  supplierId String   @map("supplier_id")
+  userId     String   @map("user_id")
+  orderId    String?  @map("order_id")
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user     Profile  @relation(fields: [userId], references: [id])
+
+  @@index([supplierId])
+  @@map("reviews")
+}
+
+model Product {
+  id           String  @id @default(uuid())
+  supplierId   String  @map("supplier_id")
+  name         String
+  description  String?
+  wristbandType String @map("wristband_type")
+
+  // Supplier-set pricing
+  priceUsd Float @map("price_usd")
+  priceEur Float? @map("price_eur")
+  priceGbp Float? @map("price_gbp")
+
+  // Customization pricing add-ons
+  printExtraUsd      Float @default(0) @map("print_extra_usd")
+  colorPrintExtraUsd Float @default(0) @map("color_print_extra_usd")
+  logoExtraUsd       Float @default(0) @map("logo_extra_usd")
+
+  // Dynamic pricing engine add-ons (per-currency)
+  // Design setup: one-time flat fee applied per order when a custom design is used
+  designSetupFeeUsd Float  @default(0) @map("design_setup_fee_usd")
+  designSetupFeeEur Float? @map("design_setup_fee_eur")
+  designSetupFeeGbp Float? @map("design_setup_fee_gbp")
+
+  // QR code: charged per unit (per wristband) when QR is enabled
+  qrCodePriceUsd Float  @default(0) @map("qr_code_price_usd")
+  qrCodePriceEur Float? @map("qr_code_price_eur")
+  qrCodePriceGbp Float? @map("qr_code_price_gbp")
+
+  // Trademark / branding: one-time flat fee applied per order when enabled
+  trademarkFeeUsd Float  @default(0) @map("trademark_fee_usd")
+  trademarkFeeEur Float? @map("trademark_fee_eur")
+  trademarkFeeGbp Float? @map("trademark_fee_gbp")
+
+  minOrderQuantity Int      @default(1) @map("min_order_quantity")
+  maxOrderQuantity Int?     @map("max_order_quantity")
+  isActive         Boolean  @default(true) @map("is_active")
+  imageUrls        String   @default("[]") @map("image_urls") // JSON string
+
+  // Customization flags
+  allowsCustomText  Boolean @default(true) @map("allows_custom_text")
+  allowsCustomColor Boolean @default(true) @map("allows_custom_color")
+  allowsLogoUpload  Boolean @default(true) @map("allows_logo_upload")
+  allowsInnerText   Boolean @default(false) @map("allows_inner_text")
+  availableSizes    String  @default("[\"S\",\"M\",\"L\",\"XL\"]") @map("available_sizes")
+  availableColors   String  @default("[]") @map("available_colors")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  supplier     Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  pricingTiers SupplierPricingTier[]
+  designs      Design[]
+  orders       Order[]
+
+  @@map("products")
+}
+
+model SupplierPricingTier {
+  id              String @id @default(uuid())
+  productId       String @map("product_id")
+  minQuantity     Int    @map("min_quantity")
+  maxQuantity     Int?   @map("max_quantity")
+  pricePerUnitUsd Float  @map("price_per_unit_usd")
+  pricePerUnitEur Float? @map("price_per_unit_eur")
+  pricePerUnitGbp Float? @map("price_per_unit_gbp")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("supplier_pricing_tiers")
+}
+
+model UserRole {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+
+  role      String    // ✅ replaced enum
+
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user Profile @relation(fields: [userId], references: [id])
+
+  @@map("user_roles")
+}
+
+model PricingConfig {
+  id                         String  @id @default(uuid())
+
+  supplierId                 String? @map("supplier_id")
+
+  wristbandType              String  @map("wristband_type")
+  minQuantity                Int     @map("min_quantity")
+
+  basePriceUsd               Float   @map("base_price_usd")
+  basePriceEur               Float   @map("base_price_eur")
+  basePriceGbp               Float   @map("base_price_gbp")
+
+  blackPrintExtraUsd         Float   @map("black_print_extra_usd")
+  blackPrintExtraEur         Float   @map("black_print_extra_eur")
+  blackPrintExtraGbp         Float   @map("black_print_extra_gbp")
+
+  fullColorPrintExtraUsd     Float   @map("full_color_print_extra_usd")
+  fullColorPrintExtraEur     Float   @map("full_color_print_extra_eur")
+  fullColorPrintExtraGbp     Float   @map("full_color_print_extra_gbp")
+
+  secureGuestsExtraUsd       Float   @map("secure_guests_extra_usd")
+  secureGuestsExtraEur       Float   @map("secure_guests_extra_eur")
+
+  supplier                   Supplier? @relation(fields: [supplierId], references: [id])
+
+  @@map("pricing_config")
+}

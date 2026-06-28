@@ -1,0 +1,23 @@
+// vite.config.ts
+import { defineConfig } from "file:///C:/Users/syeda/OneDrive%20-%20CRAB/EUWristbands/wristband-craft/client/node_modules/vite/dist/node/index.js";
+import react from "file:///C:/Users/syeda/OneDrive%20-%20CRAB/EUWristbands/wristband-craft/client/node_modules/@vitejs/plugin-react-swc/index.js";
+import path from "path";
+import { componentTagger } from "file:///C:/Users/syeda/OneDrive%20-%20CRAB/EUWristbands/wristband-craft/client/node_modules/lovable-tagger/dist/index.js";
+var __vite_injected_original_dirname = "C:\\Users\\syeda\\OneDrive - CRAB\\EUWristbands\\wristband-craft\\client";
+var vite_config_default = defineConfig(({ mode }) => ({
+  server: {
+    allowedHosts: ["8080-icae5czratw5zee8hay6d-8f6b670d.manus.computer", "8081-icae5czratw5zee8hay6d-8f6b670d.manus.computer", "8082-icae5czratw5zee8hay6d-8f6b670d.manus.computer"],
+    host: "::",
+    port: 8080
+  },
+  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  resolve: {
+    alias: {
+      "@": path.resolve(__vite_injected_original_dirname, "./src")
+    }
+  }
+}));
+export {
+  vite_config_default as default
+};
+//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsidml0ZS5jb25maWcudHMiXSwKICAic291cmNlc0NvbnRlbnQiOiBbImNvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9kaXJuYW1lID0gXCJDOlxcXFxVc2Vyc1xcXFxzeWVkYVxcXFxPbmVEcml2ZSAtIENSQUJcXFxcRVVXcmlzdGJhbmRzXFxcXHdyaXN0YmFuZC1jcmFmdFxcXFxjbGllbnRcIjtjb25zdCBfX3ZpdGVfaW5qZWN0ZWRfb3JpZ2luYWxfZmlsZW5hbWUgPSBcIkM6XFxcXFVzZXJzXFxcXHN5ZWRhXFxcXE9uZURyaXZlIC0gQ1JBQlxcXFxFVVdyaXN0YmFuZHNcXFxcd3Jpc3RiYW5kLWNyYWZ0XFxcXGNsaWVudFxcXFx2aXRlLmNvbmZpZy50c1wiO2NvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9pbXBvcnRfbWV0YV91cmwgPSBcImZpbGU6Ly8vQzovVXNlcnMvc3llZGEvT25lRHJpdmUlMjAtJTIwQ1JBQi9FVVdyaXN0YmFuZHMvd3Jpc3RiYW5kLWNyYWZ0L2NsaWVudC92aXRlLmNvbmZpZy50c1wiO2ltcG9ydCB7IGRlZmluZUNvbmZpZyB9IGZyb20gXCJ2aXRlXCI7XHJcbmltcG9ydCByZWFjdCBmcm9tIFwiQHZpdGVqcy9wbHVnaW4tcmVhY3Qtc3djXCI7XHJcbmltcG9ydCBwYXRoIGZyb20gXCJwYXRoXCI7XHJcbmltcG9ydCB7IGNvbXBvbmVudFRhZ2dlciB9IGZyb20gXCJsb3ZhYmxlLXRhZ2dlclwiO1xyXG5cclxuLy8gaHR0cHM6Ly92aXRlanMuZGV2L2NvbmZpZy9cclxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lQ29uZmlnKCh7IG1vZGUgfSkgPT4gKHtcclxuICBzZXJ2ZXI6IHtcclxuICAgIGFsbG93ZWRIb3N0czogW1wiODA4MC1pY2FlNWN6cmF0dzV6ZWU4aGF5NmQtOGY2YjY3MGQubWFudXMuY29tcHV0ZXJcIiwgXCI4MDgxLWljYWU1Y3pyYXR3NXplZThoYXk2ZC04ZjZiNjcwZC5tYW51cy5jb21wdXRlclwiLCBcIjgwODItaWNhZTVjenJhdHc1emVlOGhheTZkLThmNmI2NzBkLm1hbnVzLmNvbXB1dGVyXCJdLFxyXG4gICAgaG9zdDogXCI6OlwiLFxyXG4gICAgcG9ydDogODA4MCxcclxuICB9LFxyXG4gIHBsdWdpbnM6IFtyZWFjdCgpLCBtb2RlID09PSBcImRldmVsb3BtZW50XCIgJiYgY29tcG9uZW50VGFnZ2VyKCldLmZpbHRlcihCb29sZWFuKSxcclxuICByZXNvbHZlOiB7XHJcbiAgICBhbGlhczoge1xyXG4gICAgICBcIkBcIjogcGF0aC5yZXNvbHZlKF9fZGlybmFtZSwgXCIuL3NyY1wiKSxcclxuICAgIH0sXHJcbiAgfSxcclxufSkpO1xyXG4iXSwKICAibWFwcGluZ3MiOiAiO0FBQTBZLFNBQVMsb0JBQW9CO0FBQ3ZhLE9BQU8sV0FBVztBQUNsQixPQUFPLFVBQVU7QUFDakIsU0FBUyx1QkFBdUI7QUFIaEMsSUFBTSxtQ0FBbUM7QUFNekMsSUFBTyxzQkFBUSxhQUFhLENBQUMsRUFBRSxLQUFLLE9BQU87QUFBQSxFQUN6QyxRQUFRO0FBQUEsSUFDTixjQUFjLENBQUMsc0RBQXNELHNEQUFzRCxvREFBb0Q7QUFBQSxJQUMvSyxNQUFNO0FBQUEsSUFDTixNQUFNO0FBQUEsRUFDUjtBQUFBLEVBQ0EsU0FBUyxDQUFDLE1BQU0sR0FBRyxTQUFTLGlCQUFpQixnQkFBZ0IsQ0FBQyxFQUFFLE9BQU8sT0FBTztBQUFBLEVBQzlFLFNBQVM7QUFBQSxJQUNQLE9BQU87QUFBQSxNQUNMLEtBQUssS0FBSyxRQUFRLGtDQUFXLE9BQU87QUFBQSxJQUN0QztBQUFBLEVBQ0Y7QUFDRixFQUFFOyIsCiAgIm5hbWVzIjogW10KfQo=
