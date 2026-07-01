@@ -136,12 +136,6 @@ export class PaymentsService {
         currency: order.currency,
       };
 
-      // Ask the customer to confirm so production can begin.
-      if (order.user?.email) {
-        const token = this.ordersService.buildProductionConfirmToken(order.id);
-        const confirmUrl = `${this.clientUrl}/confirm-order?token=${encodeURIComponent(token)}`;
-        await this.email.orderConfirmationRequest(order.user.email, order.user.fullName, orderInfo, confirmUrl);
-      }
       // Notify the supplier that a paid order has arrived.
       if (order.supplier?.contactEmail) {
         await this.email.supplierNewOrder(

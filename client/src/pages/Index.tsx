@@ -1,9 +1,9 @@
-import { useNavigate } from "react-router-dom";
-import { apiFetch, clearToken } from "@/lib/api";
+import { Link, useNavigate } from "react-router-dom";
+import { apiFetch, clearToken, getCart } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import heroImage from "@/assets/hero-wristbands.jpg";
-import { Palette, Zap, ShieldCheck, ArrowRight, LogOut } from "lucide-react";
+import { Palette, Zap, ShieldCheck, ArrowRight, LogOut, ShoppingCart } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { getCurrentUser } from "@/lib/session";
@@ -14,6 +14,7 @@ const Index = () => {
   const [user, setUser] = useState<any>(null);
   const [userName, setUserName] = useState<string>("");
   const [isSupplier, setIsSupplier] = useState(false);
+  const [cartCount, setCartCount] = useState(0);
 
   useEffect(() => {
     checkUser();
@@ -24,7 +25,11 @@ const Index = () => {
     if (!currentUser) return;
 
     setUser(currentUser);
-    setIsSupplier(!!currentUser.roles?.includes("supplier"));
+    const supplierRole = !!currentUser.roles?.includes("supplier");
+    setIsSupplier(supplierRole);
+    if (!supplierRole) {
+      getCart().then((c) => setCartCount(c.count)).catch(() => {});
+    }
     const supplier = await apiFetch("/suppliers/me").catch(() => null);
     if (supplier?.companyName) {
       setUserName(supplier.companyName);
@@ -62,15 +67,28 @@ const Index = () => {
       {/* Hero Section */}
       <header className="container mx-auto px-4 py-6">
         <nav className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            EU Wristbands
-          </h1>
+          <Link to="/">
+            <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent cursor-pointer hover:opacity-80 transition-opacity">
+              EU Wristbands
+            </h1>
+          </Link>
           <div className="flex gap-3 items-center">
             {user ? (
               <>
                 <span className="text-sm font-medium text-foreground">
                   Welcome, {userName}
                 </span>
+                {!isSupplier && (
+                  <Button variant="outline" size="sm" className="relative" onClick={() => navigate("/order-summary")}>
+                    <ShoppingCart className="h-4 w-4 mr-2" />
+                    Cart
+                    {cartCount > 0 && (
+                      <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center">
+                        {cartCount}
+                      </span>
+                    )}
+                  </Button>
+                )}
                 <Button variant="ghost" onClick={() => navigate("/dashboard")}>
                   Dashboard
                 </Button>

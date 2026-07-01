@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { clearToken, getCart } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
@@ -36,9 +36,11 @@ const Dashboard = () => {
     <div className="min-h-screen bg-gradient-subtle">
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            EU Wristbands
-          </h1>
+          <Link to="/">
+            <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent cursor-pointer hover:opacity-80 transition-opacity">
+              EU Wristbands
+            </h1>
+          </Link>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{userEmail}</span>
             <Button variant="outline" size="sm" className="relative" onClick={() => navigate("/order-summary")}>

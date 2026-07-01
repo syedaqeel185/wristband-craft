@@ -165,7 +165,7 @@ export class CartService {
     if (items.length === 0) throw new BadRequestException('Your cart is empty');
 
     const orderIds: string[] = [];
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const options = this.parse(item.optionsJson);
       const order = await this.orders.create(userId, {
         userId,
@@ -181,7 +181,9 @@ export class CartService {
         printType: options.printType,
         customizationNotes: item.optionsJson ?? undefined,
         shippingAddress: dto.shippingAddress,
-        extraCharges: dto.extraCharges,
+        // One-time charges (e.g. express delivery) apply to the checkout as a
+        // whole, not per line item — only fold them into the first order.
+        extraCharges: index === 0 ? dto.extraCharges : undefined,
       });
       orderIds.push(order.id);
     }

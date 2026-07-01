@@ -104,6 +104,14 @@ export class OrdersService {
     return (status || '').trim().toUpperCase();
   }
 
+  private sumExtraCharges(extraCharges?: unknown): number {
+    if (!extraCharges || typeof extraCharges !== 'object') return 0;
+    return Object.values(extraCharges as Record<string, unknown>).reduce<number>(
+      (sum, v) => sum + (Number(v) || 0),
+      0,
+    );
+  }
+
   private safeParseObject(s?: string | null): Record<string, any> {
     if (!s) return {};
     try {
@@ -185,6 +193,11 @@ export class OrdersService {
     } else if (!Number.isFinite(totalPrice)) {
       throw new BadRequestException('Order total must be a valid number');
     }
+
+    // Extra charges (e.g. express delivery) are quoted to the customer on top
+    // of the product price, so they must be folded into the authoritative total.
+    const extraChargesTotal = this.sumExtraCharges(extraCharges);
+    totalPrice = (totalPrice ?? 0) + extraChargesTotal;
 
     const initialStatus = this.normalizeStatus(createOrderDto.status) || ORDER_STATUS.PLACED;
 

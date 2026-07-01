@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { apiFetch, getQuote, addToCart, type PriceQuote, type PrintType as QuotePrintType } from "@/lib/api";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import { apiFetch, getQuote, addToCart, getCart, type PriceQuote, type PrintType as QuotePrintType } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -183,6 +183,15 @@ const DesignStudio = () => {
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>("");
   const [supplierProducts, setSupplierProducts] = useState<any[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>("");
+  const [cartCount, setCartCount] = useState(0);
+
+  const refreshCartCount = useCallback(() => {
+    getCart().then((c) => setCartCount(c.count)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshCartCount();
+  }, [refreshCartCount]);
 
   const selectedProduct = supplierProducts.find((p) => p.id === selectedProductId);
   const minQty: number = selectedProduct?.minOrderQuantity || 1;
@@ -644,7 +653,18 @@ const DesignStudio = () => {
         // object (images included) has loaded — this is the correct completion
         // signal (the old callback arg was a per-object reviver, which fired early).
         if (canvasJson) {
-          await fabricCanvas.loadFromJSON(JSON.parse(canvasJson));
+          const parsed = JSON.parse(canvasJson);
+          // Legacy safety net: designs saved before structural objects were
+          // tagged with `zone` may still embed the procedural QR/trademark
+          // placeholder with a stale absolute URL from whatever origin they
+          // were saved on (e.g. an old dev server port). loadFromJSON rejects
+          // the whole restore if any embedded image 404s, so strip anything
+          // that looks like our own placeholder art — rebuildStructure below
+          // regenerates it fresh from the current bundled asset.
+          parsed.objects = (parsed.objects || []).filter(
+            (o: any) => !o.zone && !(o.type === "image" && typeof o.src === "string" && o.src.includes("/assets/QR")),
+          );
+          await fabricCanvas.loadFromJSON(parsed);
           fabricCanvas.getObjects().forEach((o) => {
             const t = (o.type || "").toLowerCase();
             if (t === "image" || t === "i-text" || t === "text" || t === "textbox") {
@@ -811,6 +831,7 @@ const DesignStudio = () => {
         currency,
         options: buildMeta(),
       });
+      refreshCartCount();
       if (asCart) {
         toast.success("Added to cart — you can close this tab");
         setTimeout(() => window.close(), 1500);
@@ -850,14 +871,27 @@ const DesignStudio = () => {
   return (
     <div className="min-h-screen bg-gradient-subtle">
       <header className="border-b bg-card/50 backdrop-blur-sm">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard")}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard")}>
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
+            <Link to="/">
+              <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent cursor-pointer hover:opacity-80 transition-opacity">
+                EU Wristbands · Design Studio
+              </h1>
+            </Link>
+          </div>
+          <Button variant="outline" size="sm" className="relative" onClick={() => navigate("/order-summary")}>
+            <ShoppingCart className="h-4 w-4 mr-2" />
+            Cart
+            {cartCount > 0 && (
+              <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center">
+                {cartCount}
+              </span>
+            )}
           </Button>
-          <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            EU Wristbands · Design Studio
-          </h1>
         </div>
       </header>
 
