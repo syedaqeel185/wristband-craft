@@ -117,8 +117,8 @@ const dataUrlToFile = async (dataUrl: string, filename: string): Promise<File> =
   return new File([blob], filename, { type: blob.type || "image/png" });
 };
 
-const uploadDesignImage = async (dataUrl: string): Promise<string> => {
-  const file = await dataUrlToFile(dataUrl, `design-${Date.now()}.png`);
+// Upload a file to Blob storage (via the API) and return its public URL.
+const uploadImageFile = async (file: File): Promise<string> => {
   const formData = new FormData();
   formData.append("file", file);
   const token = localStorage.getItem("token");
@@ -142,6 +142,11 @@ const uploadDesignImage = async (dataUrl: string): Promise<string> => {
   }
   if (!data.url) throw new Error("Upload did not return an image URL");
   return data.url;
+};
+
+const uploadDesignImage = async (dataUrl: string): Promise<string> => {
+  const file = await dataUrlToFile(dataUrl, `design-${Date.now()}.png`);
+  return uploadImageFile(file);
 };
 
 const DesignStudio = () => {
@@ -464,9 +469,11 @@ const DesignStudio = () => {
     }
     setPrintType("full_color");
     setHasPrint(true);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const imgUrl = event.target?.result as string;
+    try {
+      // Upload to Blob storage first and reference by URL. Embedding the logo
+      // as base64 in the canvas JSON would bloat the saved design past the
+      // serverless request-body limit (see persistDesign).
+      const imgUrl = await uploadImageFile(file);
       const img = await FabricImage.fromURL(imgUrl, { crossOrigin: "anonymous" });
       const L = bandLayout(fabricCanvas.getWidth(), fabricCanvas.getHeight());
       // Auto-fit the logo into the printable area (never block the upload).
@@ -487,8 +494,9 @@ const DesignStudio = () => {
       fabricCanvas.setActiveObject(img);
       fabricCanvas.renderAll();
       toast.success("Logo added — drag to position, or use 'Duplicate Logo' to add more");
-    };
-    reader.readAsDataURL(file);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to upload logo");
+    }
   };
 
   // Live-apply the current style controls to the selected text object (if any).
@@ -542,9 +550,11 @@ const DesignStudio = () => {
       toast.error("Image must be under 15MB");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const img = await FabricImage.fromURL(event.target?.result as string, { crossOrigin: "anonymous" });
+    try {
+      // Upload to Blob first (URL reference, not base64) — same reason as the
+      // logo upload: keep the serialized canvas small enough to POST.
+      const bgUrl = await uploadImageFile(file);
+      const img = await FabricImage.fromURL(bgUrl, { crossOrigin: "anonymous" });
       const w = fabricCanvas.getWidth();
       const h = fabricCanvas.getHeight();
       img.set({
@@ -560,8 +570,9 @@ const DesignStudio = () => {
       fabricCanvas.backgroundImage = img;
       fabricCanvas.renderAll();
       toast.success("Background applied to the wristband");
-    };
-    reader.readAsDataURL(file);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to upload background");
+    }
   };
 
   const clearBackgroundImage = () => {
