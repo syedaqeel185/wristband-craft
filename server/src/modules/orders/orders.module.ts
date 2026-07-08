@@ -4,10 +4,12 @@ import { OrdersController } from './orders.controller';
 import { OrdersPublicController } from './orders.public.controller';
 import { OrdersService } from './orders.service';
 import { PricingModule } from '../pricing/pricing.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
     PricingModule,
+    SubscriptionsModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '14d' },

@@ -1,10 +1,17 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch, setToken } from "@/lib/api";
+import { apiFetch, setToken, getCountries, type Country } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { LogIn } from "lucide-react";
 
@@ -15,6 +22,8 @@ const Auth = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [countryCode, setCountryCode] = useState("");
+  const [countries, setCountries] = useState<Country[]>([]);
   const [loading, setLoading] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(false);
   const [otp, setOtp] = useState("");
@@ -25,6 +34,10 @@ const Auth = () => {
       navigate("/dashboard");
     }
   }, [navigate]);
+
+  useEffect(() => {
+    getCountries().then(setCountries).catch(() => setCountries([]));
+  }, []);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +54,7 @@ const Auth = () => {
       if (isSignUp) {
         const data = await apiFetch('/auth/register', {
           method: 'POST',
-          body: JSON.stringify({ email, password, fullName }),
+          body: JSON.stringify({ email, password, fullName, countryCode: countryCode || undefined }),
         });
 
         if (data.needsVerification) {
@@ -185,6 +198,23 @@ const Auth = () => {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   required
                 />
+              </div>
+            )}
+            {isSignUp && (
+              <div className="space-y-2">
+                <Label htmlFor="country">Country (optional)</Label>
+                <Select value={countryCode} onValueChange={setCountryCode}>
+                  <SelectTrigger id="country">
+                    <SelectValue placeholder="Helps us show local suppliers first" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {countries.map((c) => (
+                      <SelectItem key={c.code} value={c.code}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
             <Button type="submit" className="w-full" disabled={loading} variant="hero">

@@ -5,7 +5,9 @@ import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: true buffers the raw request body (needed for Stripe webhook
+  // signature verification) without disturbing the JSON parser for other routes.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   app.enableCors({
     origin: true,
     credentials: true,

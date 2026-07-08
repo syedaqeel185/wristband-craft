@@ -15,6 +15,20 @@ export class SupplierRegisterDto {
   @IsString()
   address?: string;
 
+  // Location — country required for country-aware discovery; state/city optional.
+  @IsString()
+  @MinLength(2)
+  @MaxLength(2)
+  countryCode: string;
+
+  @IsOptional()
+  @IsString()
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
   @IsString()
   @MinLength(6)
   password: string;

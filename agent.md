@@ -596,3 +596,84 @@ Please update this file when for each module. You can ask me question if anythin
 - Order pricing trust (still client-supplied `totalPrice`) — recompute via `PricingService` server-side; planned with the Cart module.
 - Logos are extracted from the embedded canvas (base64). Consider uploading each logo as its own asset (the `DesignImage` table already exists) for higher-fidelity production files.
 - Per-currency print/logo extras are still USD-only (see pricing module note).
+
+## 2026-07-07 — Module: SaaS foundation (subscriptions, RBAC, admin, countries) — Phase 1
+
+**What**
+- **Schema** (`server/prisma/schema.prisma`, migration `saas_foundation`): new models `SubscriptionPlan`, `Subscription`, `SubscriptionPayment`, `SupplierPaymentMethod`, `PaymentTransaction`, `Country`, `AuditLog`. `Supplier` gained `countryCode` (FK→Country), `state`, `status` (ACTIVE|SUSPENDED). String-status convention (no Prisma enums), `@map` snake_case. Seeds: `prisma/seed.ts` (60 countries + `starter` plan w/ 30-day trial + backfills a TRIALING subscription for every existing supplier) and `prisma/seed-admin.ts` (owner account from `OWNER_EMAIL`/`OWNER_PASSWORD`). Run seeds with `npx ts-node prisma/seed.ts` — they're excluded from the Nest build (`tsconfig.build.json` excludes `prisma`) so `dist` output is unaffected.
+- **Security layer** (`server/src/common/`): `@Roles()` + `RolesGuard` (first real RBAC — used with `AuthGuard('jwt')`); `crypto.util.ts` (AES-256-GCM, keyed by `APP_ENCRYPTION_KEY`) for encrypting supplier payment config; global `AuditService`/`AuditModule`. Fixed `PATCH /orders/bulk` — it was authenticated but unscoped (any user could mutate any orders); now `@Roles('admin','supplier')` + scoped to the supplier's own orders via `updateMany`.
+- **Subscriptions** (`modules/subscriptions/`): trial auto-created in the register transaction. `getUsableState()` reconciles lazily on read (no cron): schema mode auto-renews (rolls period + records a PAID `SubscriptionPayment`); Stripe mode → PAST_DUE for webhooks to resolve; cancel-at-period-end → EXPIRED. `assertActive()` gates `SuppliersService.createProduct` and `OrdersService.create` (PLACED w/ supplier) — reads never gated, throws 403 `code:'SUBSCRIPTION_INACTIVE'`. Supplier endpoints: `GET /subscriptions/me`, `/me/payments`, `/plans`, `POST /me/cancel|resume|plan`. Live Stripe Billing (`stripe-billing.service.ts` + `POST /webhooks/stripe`, raw-body via `rawBody:true` in main.ts) is inert unless `BILLING_PROVIDER=stripe`.
+- **Admin/owner** (`modules/admin/`, `@Roles('admin')`): `GET /admin/overview` (supplier/subscription/revenue/customer/order stats), supplier mgmt (`/admin/suppliers` search+country+status, suspend/activate/delete), subscription list + manual override, plan CRUD.
+- **Countries** (`GET /countries`, public) + **payment-methods** (`modules/payment-methods/`, supplier-owned CRUD, config encrypted, secrets never returned — only `maskedConfig`).
+- **Frontend**: `SupplierSignup` now collects Country (required)/State/City; `lib/api.ts` gained countries/subscription/payment-method/admin helpers and now surfaces error `code`; new `SubscriptionBanner` (mounted on supplier dashboard), `SupplierBilling` page (`/admin/billing`), and `PlatformDashboard` (`/platform`, admin-gated, KPIs + orders chart + supplier table). Admin users route to `/platform` on login.
+
+**Why**
+- No subscription/gating, no per-supplier payment abstraction, no real RBAC, no platform-owner admin, and suppliers had no country. This is the foundation the rest of the SaaS spec (Stripe Connect checkout, country-aware discovery, revenue analytics) builds on.
+
+**Decisions**
+- Customer→supplier payments will use **Stripe Connect** (Phase 2) — schema laid now, no raw gateway secret keys stored. Subscription billing is **schema-driven now**, live Stripe Billing behind `BILLING_PROVIDER`. Expiry/renewal is **lazy on read** (no cron infra).
+
+**Env added:** `APP_ENCRYPTION_KEY` (32-byte base64/hex, required for payment methods), `BILLING_PROVIDER` (none|stripe), `OWNER_EMAIL`/`OWNER_PASSWORD`. See `.env.example`.
+
+**Verified:** migrate applied + seeds ran (60 countries, starter plan, 17 trials); server build + client `tsc` + `vite build` clean. E2E (curl): register supplier (DE) → `/subscriptions/me` TRIALING 30d → product create 201 → expire period → read auto-renews to ACTIVE + €29 PAID recorded → admin suspend → product create **403**, product read **200** → activate → create **201**; cancel/resume OK; payment-method config **encrypted in DB (no plaintext IBAN), masked in API**; `/orders/bulk` **403** (customer) / **401** (anon). Browser: signup shows country/state/city; `/platform` renders all KPIs + supplier table; `/admin/billing` shows plan/next-billing/payment history — no console errors.
+
+**Remaining (later phases):** Stripe Connect onboarding + destination charges + supplier payment-method UI (Phase 2); country-aware supplier discovery (Phase 3); revenue analytics depth, coupons/taxes (Phase 4); UI polish + rename supplier `/admin`→`/supplier` (Phase 5).
+
+## 2026-07-07 — Module: Per-supplier payments & checkout routing — Phase 2
+
+**What**
+- **Stripe Connect onboarding** (`modules/payment-methods/stripe-connect.service.ts`): create Express account, onboarding account-link, and status refresh. `POST /payment-methods/stripe/connect` + `GET /payment-methods/stripe/status`. Fully gated — if the platform Stripe account hasn't enabled Connect, onboarding returns a clear 400 pointing to dashboard.stripe.com/connect.
+- **Checkout routing** (`PaymentsService.createCheckoutSession` rewritten): groups the customer's orders **by supplier** and routes each to that supplier's default payment method — **Stripe Connect** → a Checkout Session per supplier with a **destination charge** (`payment_intent_data.transfer_data.destination`, optional `application_fee_amount` via `PLATFORM_FEE_PERCENT`); **manual/bank/wallet** → orders marked `awaiting_payment` and the supplier's instructions returned; **no method** → reported `unavailable`. Returns `{ routes[], url }` (`url` = first Stripe session for single-supplier back-compat). Money goes to the supplier, not the platform.
+- **Manual confirmation**: `POST /payments/orders/:id/mark-paid` (supplier/admin) marks an offline-paid order `paid` + `ACCEPTED`. Both Stripe confirm and manual mark-paid now write a **`PaymentTransaction`** ledger row (customer→supplier, with platform fee).
+- **Frontend**: new `SupplierPayments` page (`/admin/payments`) — Stripe Connect card (connect/continue/status) + bank/wallet CRUD (BANK_TRANSFER/JAZZCASH/EASYPAISA/PAYPAL/MANUAL) with masked config; `PaymentSuccess` renders per-supplier manual instructions; `Address` checkout follows Stripe URL or shows manual instructions; `AdminDashboard` order cards gained a **Mark paid** action for `awaiting_payment` orders + a Payments nav link.
+
+**Why**
+- Spec #2/#3: every customer payment previously went to one platform Stripe key. Now each supplier manages their own methods and receives payment directly.
+
+**Decisions / limits**
+- **Stripe Connect can't be E2E-tested here** — the test key's account hasn't enabled Connect. The Connect path is built + correct + gracefully gated; enabling Connect in the Stripe dashboard activates it live. The **manual/bank path is the fully-verified route** and lets suppliers accept money immediately without Connect.
+- One Checkout Session per supplier (destination charges can't span connected accounts); multi-supplier carts return multiple routes — the UI follows the first Stripe URL and shows manual instructions for the rest.
+
+**Env added:** `PLATFORM_FEE_PERCENT` (optional marketplace fee, default 0).
+
+**Verified:** server build + client `tsc` + `vite build` clean. E2E (curl): supplier adds BANK_TRANSFER (default) → customer order (server-priced €100, tampered total overridden) → checkout returns **manual** route + instructions, order `awaiting_payment` → supplier **mark-paid** → `paid`/`ACCEPTED` + **`PaymentTransaction`** row (BANK_TRANSFER €100 PAID) → Stripe connect start returns graceful 400. Browser: `/admin/payments` shows Connect card + masked bank methods + add form — no console errors.
+
+## 2026-07-07 — Module: Country-aware supplier discovery — Phase 3
+
+**What**
+- **Customer country**: added `Profile.countryCode` (migration `profile_country`). `POST /auth/register` accepts optional `countryCode`; `GET /auth/me` returns it; new `PATCH /auth/me/country` lets a customer set it later.
+- **Directory query API**: `GET /suppliers/directory` now takes `country`, `category` (wristband type), `minRating`, `sort` (rating|newest|popular), and `near` (customer country). When `near` is set and no explicit `country` filter, local suppliers float to the top (`isLocal` flag), preserving the chosen sort within each group. Suspended suppliers are excluded. Entries gained `countryCode`, `totalOrders`, `createdAt`.
+- **Frontend**: reusable `SupplierDirectory` component (filter bar: country / category / rating / sort) — defaults to **"My country first"** when the customer's country is known, else "All countries". Extracted `SupplierGrid` into its own module (`SupplierGrid.tsx`) to break the import cycle; it now renders a **Local** badge. Wired into the customer dashboard ("All suppliers" tab) and the homepage showcase. Customer signup (`Auth.tsx`) gained an optional Country select.
+
+**Why**
+- Spec #6: suppliers were listed without localization. Customers now see nearby suppliers first and can filter by country/category/rating/popularity.
+
+**Verified:** server build + client `tsc` + `vite build` clean. E2E (curl): `country=DE` → 2 DE suppliers; `near=DE` → DE-first with `isLocal=true`; `sort=newest` → newest first; `category=silicone` → all offer silicone; `minRating=4` → all ≥4; register with `countryCode` → `/auth/me` returns it, `PATCH /auth/me/country fr` → normalized `FR`. Browser (logged-in DE customer): dashboard directory defaults to "My country first", the 2 DE suppliers sort first **with Local badges**, 4 filter selects render — no console errors.
+
+## 2026-07-08 — Module: Revenue analytics + coupons & taxes — Phase 4
+
+**What**
+- **Schema** (migration `coupons_taxes`): `Coupon` (code, percent/fixed, value, active, expiry, max/timesRedeemed), `TaxRate` (per-country %, active), `Subscription.couponId`, and `SubscriptionPayment.discountAmount`/`taxAmount`.
+- **Effective pricing** (`SubscriptionsService`): `computeCharge()` = plan price − coupon discount + country tax; surfaced in `getUsableState().pricing` (+ `coupon`), and applied when `autoRenew()` records a payment (stores discount/tax/total). `POST /subscriptions/me/coupon` (validate active/expiry/redemption-limit, attach, increment redemptions) + `DELETE /subscriptions/me/coupon`.
+- **Admin** (`@Roles('admin')`): `GET /admin/revenue` (MRR run-rate, month/year/all-time revenue, tax collected, discounts given, 6-month trend, failed payments, upcoming renewals ≤30d, cancelled list); coupon CRUD (`GET/POST/PATCH /admin/coupons`); tax-rate upsert (`GET/POST /admin/tax-rates`).
+- **Frontend**: `PlatformDashboard` gained a **Revenue** section (KPIs + 6-month trend bar chart + failed/upcoming/cancelled mini-lists) and a **Coupons & Taxes** manager (create coupon, enable/disable, upsert per-country tax). `SupplierBilling` shows the **price breakdown** (plan − discount + tax = total) and a **coupon apply/remove** field.
+
+**Why**
+- Spec #4 Revenue + Subscription Management: MRR/annual revenue, failed payments, upcoming renewals, and the (previously "future-ready") discounts/coupons/taxes — now functional end-to-end, not stubs.
+
+**Verified:** server build + client `tsc` + `vite build` clean. E2E (curl): admin creates DE VAT 19% + coupon SAVE20 (20%) → supplier applies it → `pricing` = base €29 − €5.80 = €23.20 taxable + €4.41 VAT = **€27.61**; period expiry → auto-renew records a payment (amount €27.61, discount €5.80, tax €4.41); `GET /admin/revenue` returns month/year/total €56.61, tax €4.41, discounts €5.80, 6-month trend, 19 upcoming renewals; coupon `timesRedeemed`=1. Browser: `/platform` renders Revenue KPIs + trend + coupons/taxes manager (SAVE20, DE VAT); `/admin/billing` shows the breakdown + applied coupon + €27.61 in history — no console errors.
+
+**Roadmap remaining:** Phase 5 — UI/UX polish pass (empty/loading/error states, responsive, notifications) + rename supplier `/admin`→`/supplier`. Stripe Connect still needs a Connect-enabled Stripe account to go live (Phase 2 note).
+
+## 2026-07-08 — Module: Supplier route rename + UI polish — Phase 5
+
+**What**
+- **Renamed the supplier console `/admin/*` → `/supplier/*`** (`/supplier`, `/supplier/products|pricing|designs|billing|payments|reset-password`) to remove the naming overlap with the platform-owner dashboard at `/platform`. Updated every client `navigate()` call and the `ProtectedRoute` redirect/guard logic; `ProtectedRoute` now sends admins to `/platform` and suppliers to `/supplier` (`homePath`), and treats both `/supplier` and `/platform` as console areas. Added **back-compat redirects** so old `/admin/*` links resolve to the new paths. The backend admin API prefix (`/admin/*` in `lib/api.ts`) is unchanged — those are the owner's server routes, not client paths.
+- The app already carries consistent loading spinners, empty states, `sonner` toasts, and error handling built across Phases 1–4 (billing, payments, platform, directory pages); Phase 5 kept those and focused on the structural route clarity.
+
+**Why**
+- `/admin` was historically the *supplier* console (confusing now that a real platform-owner dashboard exists at `/platform`). Suppliers now have a clearly-named home.
+
+**Verified:** client `tsc` + `vite build` clean; grep confirms zero stray client `/admin` navigate/guard refs. Browser routing (no backend needed — `ProtectedRoute` redirects deterministically without a token): `/supplier/billing` resolves (→ `/auth`, not 404); old `/admin/products` back-compat-redirects (→ `/auth`, not 404); unknown path → 404. Responsive: no horizontal overflow at 375px on signup/auth.
+
+> **Env note (2026-07-08):** Docker Desktop (local Postgres on :5433) was stopped this session, so the DB-backed backend couldn't run for a full click-through — this is an environment issue, not a code one; the dev data is intact in the Docker volume and returns once Docker is running (`docker compose up -d`). All prior phases' backend E2E passed against this DB.

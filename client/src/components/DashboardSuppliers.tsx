@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { type DirectorySupplier, getSupplierDirectory, getRecentSuppliers } from "@/lib/api";
-import { SupplierGrid } from "@/components/SuppliersShowcase";
+import { SupplierGrid } from "@/components/SupplierGrid";
+import { SupplierDirectory } from "@/components/SupplierDirectory";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2 } from "lucide-react";
 
@@ -47,7 +48,7 @@ export const DashboardSuppliers = () => {
           />
         </TabsContent>
         <TabsContent value="all">
-          <SupplierGrid suppliers={all} />
+          <SupplierDirectory />
         </TabsContent>
       </Tabs>
     </section>

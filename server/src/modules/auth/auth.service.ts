@@ -21,6 +21,7 @@ export class AuthService {
         email: dto.email,
         password: passwordHash,
         fullName: dto.fullName,
+        countryCode: dto.countryCode?.toUpperCase(),
         isVerified: true,
       },
       include: { roles: true },
@@ -118,6 +119,7 @@ export class AuthService {
         id: true,
         email: true,
         fullName: true,
+        countryCode: true,
         createdAt: true,
         roles: {
           select: { role: true },
@@ -131,6 +133,15 @@ export class AuthService {
       ...profile,
       roles: profile.roles.map((entry) => entry.role),
     };
+  }
+
+  /** Set/update the current customer's country (for country-aware discovery). */
+  async updateCountry(userId: string, countryCode: string) {
+    await this.prisma.profile.update({
+      where: { id: userId },
+      data: { countryCode: countryCode.toUpperCase() },
+    });
+    return { success: true, countryCode: countryCode.toUpperCase() };
   }
 
   async changePassword(userId: string, newPassword: string) {

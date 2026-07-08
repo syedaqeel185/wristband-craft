@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { SuppliersService } from './suppliers.service';
 import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
@@ -89,8 +89,20 @@ export class SuppliersController {
   // ---- Public listing + parametric routes ----
 
   @Get('directory')
-  directory() {
-    return this.suppliersService.directory();
+  directory(
+    @Query('country') country?: string,
+    @Query('category') category?: string,
+    @Query('minRating') minRating?: string,
+    @Query('sort') sort?: string,
+    @Query('near') near?: string,
+  ) {
+    return this.suppliersService.directory({
+      country,
+      category,
+      minRating: minRating != null ? Number(minRating) : undefined,
+      sort,
+      near,
+    });
   }
 
   @Get()

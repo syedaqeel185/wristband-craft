@@ -2,9 +2,11 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Request, UseGuards }
 import { AuthGuard } from '@nestjs/passport';
 import { OrdersService } from './orders.service';
 import { BulkOrderUpdateDto, CreateOrderDto, UpdateOrderStatusDto, UpdateShipmentDto } from './orders.dto';
+import { RolesGuard } from '../../common/roles.guard';
+import { Roles } from '../../common/roles.decorator';
 
 @Controller('orders')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), RolesGuard)
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
@@ -24,8 +26,9 @@ export class OrdersController {
   }
 
   @Patch('bulk')
-  updateBulk(@Body() dto: BulkOrderUpdateDto) {
-    return this.ordersService.updateBulk(dto);
+  @Roles('admin', 'supplier')
+  updateBulk(@Request() req: any, @Body() dto: BulkOrderUpdateDto) {
+    return this.ordersService.updateBulk(dto, { id: req.user.id, roles: req.user.roles || [] });
   }
 
   @Patch(':id/status')

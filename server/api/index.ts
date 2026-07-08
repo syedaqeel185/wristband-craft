@@ -9,7 +9,9 @@ const server = express();
 let ready: Promise<void> | null = null;
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
+  // rawBody: true buffers the raw request body for Stripe webhook signature
+  // verification (mirrors main.ts). Harmless when BILLING_PROVIDER=none.
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(server), { rawBody: true });
   app.enableCors({ origin: true, credentials: true });
   app.use(json({ limit: '30mb' }));
   app.use(urlencoded({ extended: true, limit: '30mb' }));

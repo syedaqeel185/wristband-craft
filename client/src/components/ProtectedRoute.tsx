@@ -45,14 +45,17 @@ const ProtectedRoute = ({ children, allowedRoles }: ProtectedRouteProps) => {
   }
 
   const isSupplierOrAdmin = userRoles.includes('supplier') || userRoles.includes('admin');
+  // Platform owners live on /platform; suppliers on their /supplier console.
+  const homePath = userRoles.includes('admin') ? '/platform' : '/supplier';
 
   if (allowedRoles) {
     const hasRole = allowedRoles.some((r) => userRoles.includes(r));
     if (!hasRole) {
-      return <Navigate to={isSupplierOrAdmin ? "/admin" : "/dashboard"} replace />;
+      return <Navigate to={isSupplierOrAdmin ? homePath : "/dashboard"} replace />;
     }
-  } else if (isSupplierOrAdmin && !location.pathname.startsWith("/admin")) {
-    // Suppliers can use the same shopping / design flow as customers; other non-admin areas redirect to the dashboard
+  } else if (isSupplierOrAdmin && !location.pathname.startsWith("/supplier") && !location.pathname.startsWith("/platform")) {
+    // Suppliers can use the same shopping / design flow as customers; other
+    // non-console areas redirect to their home dashboard.
     const customerFlowPaths = [
       "/design-studio",
       "/order-summary",
@@ -67,7 +70,7 @@ const ProtectedRoute = ({ children, allowedRoles }: ProtectedRouteProps) => {
     if (isCustomerFlow) {
       return <>{children}</>;
     }
-    return <Navigate to="/admin" replace />;
+    return <Navigate to={homePath} replace />;
   }
 
   return <>{children}</>;

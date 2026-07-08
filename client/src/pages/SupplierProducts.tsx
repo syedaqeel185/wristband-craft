@@ -196,7 +196,7 @@ const SupplierProducts = () => {
     <div className="min-h-screen bg-gradient-subtle p-4">
       <header className="max-w-5xl mx-auto border-b bg-card/50 backdrop-blur-sm p-4 flex items-center justify-between rounded-t-xl mb-4">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/admin")}>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/supplier")}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Dashboard
           </Button>

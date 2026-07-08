@@ -3,10 +3,12 @@ import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { SuppliersService } from './suppliers.service';
 import { SuppliersController } from './suppliers.controller';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
     PrismaModule,
+    SubscriptionsModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },

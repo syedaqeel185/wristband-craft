@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, markOrderPaid } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
+import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -197,16 +198,22 @@ const AdminDashboard = () => {
           <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent flex-1">
             {isAdmin ? "Admin Dashboard" : "Supplier Dashboard"}
           </h1>
-          <Button variant="outline" size="sm" onClick={() => navigate("/admin/designs")}>
+          <Button variant="outline" size="sm" onClick={() => navigate("/supplier/designs")}>
             Designs
           </Button>
           {isSupplier && (
             <>
-              <Button variant="outline" size="sm" onClick={() => navigate("/admin/products")}>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/products")}>
                 Products
               </Button>
-              <Button variant="outline" size="sm" onClick={() => navigate("/admin/pricing")}>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/pricing")}>
                 Pricing
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/payments")}>
+                Payments
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/billing")}>
+                Billing
               </Button>
             </>
           )}
@@ -214,6 +221,11 @@ const AdminDashboard = () => {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+        {isSupplier && (
+          <div className="mb-6">
+            <SubscriptionBanner />
+          </div>
+        )}
         {/* KPI cards */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
           <StatCard label="Total Orders" value={orders.length} icon={<Package className="h-4 w-4" />} />
@@ -363,6 +375,19 @@ const OrderCard = ({
     }
   };
 
+  const markPaid = async () => {
+    setBusy(true);
+    try {
+      await markOrderPaid(order.id);
+      toast.success("Payment confirmed — order ready for production");
+      onChanged();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to confirm payment");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitShipment = async () => {
     if (!ship.trackingNumber && !ship.courier) {
       toast.error("Enter a courier and/or tracking number");
@@ -405,8 +430,13 @@ const OrderCard = ({
               {order.user?.fullName || order.user?.email || "Customer"}
             </p>
           </div>
-          {canManage && actions.length > 0 && (
+          {canManage && (order.paymentStatus === "awaiting_payment" || actions.length > 0) && (
             <div className="flex gap-2 flex-wrap">
+              {canManage && order.paymentStatus === "awaiting_payment" && (
+                <Button size="sm" variant="secondary" disabled={busy} onClick={markPaid}>
+                  Mark paid
+                </Button>
+              )}
               {actions.map((a) =>
                 a.next === "CANCELLED" ? (
                   <Button

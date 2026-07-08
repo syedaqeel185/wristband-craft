@@ -13,6 +13,8 @@ model Profile {
   fullName          String?    @map("full_name")
   isVerified        Boolean    @default(false) @map("is_verified")
   verificationToken String?    @map("verification_token")
+  // Customer country (ISO-2) for country-aware supplier discovery.
+  countryCode       String?    @map("country_code")
   createdAt         DateTime   @default(now()) @map("created_at")
 
   orders     Order[]
@@ -202,13 +204,215 @@ model Supplier {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
+  // Normalized location. `countryCode` (ISO-2, FK -> Country) is the source of
+  // truth going forward; the legacy `country`/`city` strings above are retained
+  // during the transition and mirrored from these on write.
+  countryCode   String?  @map("country_code")
+  state         String?
+
+  // Admin lifecycle: ACTIVE | SUSPENDED. Suspended suppliers keep read access
+  // but cannot create products or accept new orders.
+  status        String   @default("ACTIVE")
+
   user           Profile         @relation(fields: [userId], references: [id])
+  countryRef     Country?        @relation(fields: [countryCode], references: [code])
   orders         Order[]
   products       Product[]
   pricingConfigs PricingConfig[]
   reviews        Review[]
+  subscription   Subscription?
+  paymentMethods SupplierPaymentMethod[]
+  transactions   PaymentTransaction[]
 
+  @@index([countryCode])
+  @@index([status])
   @@map("suppliers")
+}
+
+// ---------------------------------------------------------------------------
+// SaaS: subscription plans, subscriptions, billing history
+// ---------------------------------------------------------------------------
+
+model SubscriptionPlan {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  name          String
+  description   String?
+  priceUsd      Float    @default(0) @map("price_usd")
+  priceEur      Float?   @map("price_eur")
+  priceGbp      Float?   @map("price_gbp")
+  interval      String   @default("month") // month | year
+  trialDays     Int      @default(30) @map("trial_days")
+  isActive      Boolean  @default(true) @map("is_active")
+  stripePriceId String?  @map("stripe_price_id")
+  featuresJson  String?  @map("features_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id                   String    @id @default(uuid())
+  supplierId           String    @unique @map("supplier_id")
+  planId               String    @map("plan_id")
+  couponId             String?   @map("coupon_id")
+  // TRIALING | ACTIVE | PAST_DUE | CANCELED | EXPIRED
+  status               String    @default("TRIALING")
+  currentPeriodStart   DateTime  @default(now()) @map("current_period_start")
+  currentPeriodEnd     DateTime  @map("current_period_end")
+  trialEndsAt          DateTime? @map("trial_ends_at")
+  cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
+  canceledAt           DateTime? @map("canceled_at")
+  stripeCustomerId     String?   @map("stripe_customer_id")
+  stripeSubscriptionId String?   @map("stripe_subscription_id")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  supplier Supplier              @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan      @relation(fields: [planId], references: [id])
+  coupon   Coupon?               @relation(fields: [couponId], references: [id])
+  payments SubscriptionPayment[]
+
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model Coupon {
+  id             String    @id @default(uuid())
+  code           String    @unique
+  description    String?
+  // percent | fixed
+  discountType   String    @default("percent") @map("discount_type")
+  discountValue  Float     @map("discount_value")
+  isActive       Boolean   @default(true) @map("is_active")
+  expiresAt      DateTime? @map("expires_at")
+  maxRedemptions Int?      @map("max_redemptions")
+  timesRedeemed  Int       @default(0) @map("times_redeemed")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("coupons")
+}
+
+model TaxRate {
+  id          String   @id @default(uuid())
+  countryCode String   @unique @map("country_code")
+  name        String
+  ratePercent Float    @map("rate_percent")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("tax_rates")
+}
+
+model SubscriptionPayment {
+  id              String    @id @default(uuid())
+  subscriptionId  String    @map("subscription_id")
+  supplierId      String    @map("supplier_id")
+  amount          Float     @default(0)
+  discountAmount  Float     @default(0) @map("discount_amount")
+  taxAmount       Float     @default(0) @map("tax_amount")
+  currency        String    @default("EUR")
+  // PAID | FAILED | PENDING | REFUNDED
+  status          String    @default("PAID")
+  periodStart     DateTime? @map("period_start")
+  periodEnd       DateTime? @map("period_end")
+  stripeInvoiceId String?   @map("stripe_invoice_id")
+  paidAt          DateTime? @map("paid_at")
+  failureReason   String?   @map("failure_reason")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@map("subscription_payments")
+}
+
+// ---------------------------------------------------------------------------
+// Per-supplier payment methods + customer->supplier transactions
+// (schema laid down in Phase 1; live charge flow lands in Phase 2)
+// ---------------------------------------------------------------------------
+
+model SupplierPaymentMethod {
+  id              String   @id @default(uuid())
+  supplierId      String   @map("supplier_id")
+  // STRIPE_CONNECT | PAYPAL | BANK_TRANSFER | JAZZCASH | EASYPAISA | MANUAL
+  provider        String
+  label           String?
+  isDefault       Boolean  @default(false) @map("is_default")
+  isActive        Boolean  @default(true) @map("is_active")
+  // PENDING | CONNECTED | DISABLED
+  status          String   @default("PENDING")
+  // AES-256-GCM ciphertext of the provider config (keys, bank/wallet details).
+  configEncrypted String?  @map("config_encrypted")
+  // Stripe Connect account id is not secret, kept in the clear for lookups.
+  stripeAccountId String?  @map("stripe_account_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@map("supplier_payment_methods")
+}
+
+model PaymentTransaction {
+  id                    String   @id @default(uuid())
+  orderId               String?  @map("order_id")
+  supplierId            String   @map("supplier_id")
+  paymentMethodId       String?  @map("payment_method_id")
+  provider              String
+  amount                Float    @default(0)
+  currency              String   @default("EUR")
+  // PENDING | PAID | FAILED | REFUNDED
+  status                String   @default("PENDING")
+  stripePaymentIntentId String?  @map("stripe_payment_intent_id")
+  platformFeeAmount     Float?   @map("platform_fee_amount")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@index([orderId])
+  @@map("payment_transactions")
+}
+
+// ---------------------------------------------------------------------------
+// Reference data + audit trail
+// ---------------------------------------------------------------------------
+
+model Country {
+  code     String  @id // ISO-3166 alpha-2
+  name     String
+  region   String?
+  currency String?
+  isActive Boolean @default(true) @map("is_active")
+
+  suppliers Supplier[]
+
+  @@map("countries")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?  @map("actor_user_id")
+  actorRole    String?  @map("actor_role")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String?  @map("entity_id")
+  metadataJson String?  @map("metadata_json")
+  ip           String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_logs")
 }
 
 model Review {

@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { PricingService } from '../pricing/pricing.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { BulkOrderUpdateDto, CreateOrderDto, UpdateOrderStatusDto, UpdateShipmentDto } from './orders.dto';
 
 const CONFIRM_PURPOSE = 'confirm-production';
@@ -35,6 +36,7 @@ export class OrdersService {
     private readonly jwtService: JwtService,
     private readonly email: EmailService,
     private readonly pricing: PricingService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   /** Signed, time-limited token embedded in the "confirm your order" email link. */
@@ -203,6 +205,12 @@ export class OrdersService {
 
     if (initialStatus !== ORDER_STATUS.DRAFT && initialStatus !== ORDER_STATUS.PLACED) {
       throw new BadRequestException('New orders can only start as DRAFT or PLACED');
+    }
+
+    // Gate: a supplier must have an active subscription (and not be suspended)
+    // to receive new orders. DRAFTs (unsubmitted carts) are not gated.
+    if (supplierId && initialStatus === ORDER_STATUS.PLACED) {
+      await this.subscriptions.assertActive(supplierId);
     }
 
     try {
@@ -462,19 +470,27 @@ export class OrdersService {
     return updatedOrder;
   }
 
-  async updateBulk(dto: BulkOrderUpdateDto) {
-    const updates = await Promise.all(
-      dto.orderIds.map((id) =>
-        this.prisma.order.update({
-          where: { id },
-          data: {
-            shippingAddress: dto.shippingAddress ? JSON.stringify(dto.shippingAddress) : undefined,
-            extraCharges: dto.extraCharges ? JSON.stringify(dto.extraCharges) : undefined,
-          },
-        }),
-      ),
-    );
-    return { updated: updates.length };
+  async updateBulk(dto: BulkOrderUpdateDto, user: { id: string; roles: string[] }) {
+    // Scope the bulk mutation to orders the actor may manage: admins can touch
+    // any order; a supplier only their fulfilled orders. This prevents an
+    // authenticated user from editing arbitrary orders by id.
+    let scope: Prisma.OrderWhereInput = { id: { in: dto.orderIds } };
+    if (!user.roles.includes('admin')) {
+      const supplier = await this.prisma.supplier.findUnique({ where: { userId: user.id } });
+      if (!supplier) {
+        throw new ForbiddenException('Only a supplier or admin can bulk-update orders');
+      }
+      scope = { ...scope, supplierId: supplier.id };
+    }
+
+    const result = await this.prisma.order.updateMany({
+      where: scope,
+      data: {
+        shippingAddress: dto.shippingAddress ? JSON.stringify(dto.shippingAddress) : undefined,
+        extraCharges: dto.extraCharges ? JSON.stringify(dto.extraCharges) : undefined,
+      },
+    });
+    return { updated: result.count };
   }
 
   async getTimeline(orderId: string, user: { id: string; roles: string[] }) {

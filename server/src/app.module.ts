@@ -12,10 +12,16 @@ import { PricingModule } from './modules/pricing/pricing.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { EmailModule } from './modules/email/email.module';
 import { CartModule } from './modules/cart/cart.module';
+import { AuditModule } from './common/audit.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { CountriesModule } from './modules/countries/countries.module';
+import { PaymentMethodsModule } from './modules/payment-methods/payment-methods.module';
 
 @Module({
   imports: [
     PrismaModule,
+    AuditModule,
     AuthModule,
     SuppliersModule,
     OrdersModule,
@@ -26,6 +32,10 @@ import { CartModule } from './modules/cart/cart.module';
     PaymentsModule,
     EmailModule,
     CartModule,
+    SubscriptionsModule,
+    AdminModule,
+    CountriesModule,
+    PaymentMethodsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

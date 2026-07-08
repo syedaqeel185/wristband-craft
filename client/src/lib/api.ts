@@ -29,7 +29,17 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   if (!response.ok) {
     const msg = data?.message;
     const asText = Array.isArray(msg) ? msg.join(', ') : (typeof msg === 'string' ? msg : null);
-    throw new Error(asText || data?.error || response.statusText || 'API request failed');
+    const error = new Error(asText || data?.error || response.statusText || 'API request failed') as Error & {
+      code?: string;
+      status?: number;
+      reason?: string;
+    };
+    // Surface structured error fields (e.g. code: 'SUBSCRIPTION_INACTIVE') so the
+    // UI can react — show the right banner, etc.
+    error.code = data?.code;
+    error.reason = data?.reason;
+    error.status = response.status;
+    throw error;
   }
 
   return data;
@@ -175,11 +185,41 @@ export function getQuote(req: QuoteRequest) {
 // Payments (Stripe Checkout)
 // ---------------------------------------------------------------------------
 
+export interface CheckoutRoute {
+  supplierId: string;
+  supplierName?: string;
+  orderIds: string[];
+  amount: number;
+  currency: string;
+  type: 'stripe' | 'manual' | 'unavailable';
+  provider?: string;
+  label?: string | null;
+  url?: string;
+  sessionId?: string;
+  instructions?: Record<string, unknown>;
+  message?: string;
+}
+
+export interface CheckoutResponse {
+  routes: CheckoutRoute[];
+  url?: string;
+  sessionId?: string;
+}
+
 export function createCheckout(orderIds: string[]) {
   return apiFetch('/payments/checkout', {
     method: 'POST',
     body: JSON.stringify({ orderIds }),
-  }) as Promise<{ url: string; sessionId: string }>;
+  }) as Promise<CheckoutResponse>;
+}
+
+/** Supplier/admin confirms an offline (manual/bank/wallet) payment was received. */
+export function markOrderPaid(orderId: string) {
+  return apiFetch(`/payments/orders/${orderId}/mark-paid`, { method: 'POST' }) as Promise<{
+    paid?: boolean;
+    alreadyPaid?: boolean;
+    orderId: string;
+  }>;
 }
 
 export function confirmPayment(sessionId: string) {
@@ -207,12 +247,24 @@ export interface DirectorySupplier {
   description?: string | null;
   city?: string | null;
   country?: string | null;
+  countryCode?: string | null;
   logoUrl?: string | null;
   rating: number;
   reviewCount: number;
+  totalOrders?: number;
+  createdAt?: string;
+  isLocal?: boolean;
   isVerified: boolean;
   productCount: number;
   services: string[];
+}
+
+export interface DirectoryFilters {
+  country?: string;
+  category?: string;
+  minRating?: number;
+  sort?: 'rating' | 'newest' | 'popular';
+  near?: string;
 }
 
 export interface SupplierReview {
@@ -223,8 +275,19 @@ export interface SupplierReview {
   reviewer: string;
 }
 
-export function getSupplierDirectory() {
-  return apiFetch("/suppliers/directory") as Promise<DirectorySupplier[]>;
+export function getSupplierDirectory(filters: DirectoryFilters = {}) {
+  const qs = new URLSearchParams(
+    Object.entries(filters).filter(([, v]) => v != null && v !== "") as [string, string][],
+  ).toString();
+  return apiFetch(`/suppliers/directory${qs ? `?${qs}` : ""}`) as Promise<DirectorySupplier[]>;
+}
+
+/** Set the current customer's country (used for country-aware discovery). */
+export function setMyCountry(countryCode: string) {
+  return apiFetch("/auth/me/country", { method: "PATCH", body: JSON.stringify({ countryCode }) }) as Promise<{
+    success: boolean;
+    countryCode: string;
+  }>;
 }
 
 export function getRecentSuppliers() {
@@ -308,4 +371,288 @@ export function createSupplierReview(supplierId: string, rating: number, comment
     method: "POST",
     body: JSON.stringify({ rating, comment }),
   }) as Promise<SupplierReview[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Countries (reference data)
+// ---------------------------------------------------------------------------
+
+export interface Country {
+  code: string;
+  name: string;
+  region?: string | null;
+  currency?: string | null;
+}
+
+export function getCountries() {
+  return apiFetch("/countries") as Promise<Country[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions (supplier billing)
+// ---------------------------------------------------------------------------
+
+export interface SubscriptionPlan {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  priceUsd: number;
+  priceEur?: number | null;
+  priceGbp?: number | null;
+  interval: string;
+  trialDays: number;
+  isActive: boolean;
+  featuresJson?: string | null;
+}
+
+export interface ChargeBreakdown {
+  base: number;
+  discount: number;
+  taxable: number;
+  taxRatePercent: number;
+  taxName: string | null;
+  tax: number;
+  total: number;
+  currency: string;
+  couponCode: string | null;
+}
+
+export interface SubscriptionState {
+  usable: boolean;
+  reason: string | null;
+  status: string;
+  supplierStatus: string;
+  isTrial: boolean;
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  nextBillingDate: string | null;
+  cancelAtPeriodEnd: boolean;
+  daysRemaining: number;
+  plan: SubscriptionPlan;
+  coupon: { code: string; description?: string | null } | null;
+  pricing: ChargeBreakdown;
+  subscriptionId: string;
+}
+
+export interface SubscriptionPayment {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  paidAt?: string | null;
+  failureReason?: string | null;
+  createdAt: string;
+}
+
+export function getMySubscription() {
+  return apiFetch("/subscriptions/me") as Promise<SubscriptionState>;
+}
+
+export function getSubscriptionPayments() {
+  return apiFetch("/subscriptions/me/payments") as Promise<SubscriptionPayment[]>;
+}
+
+export function getSubscriptionPlans() {
+  return apiFetch("/subscriptions/plans") as Promise<SubscriptionPlan[]>;
+}
+
+export function cancelSubscription() {
+  return apiFetch("/subscriptions/me/cancel", { method: "POST" });
+}
+
+export function resumeSubscription() {
+  return apiFetch("/subscriptions/me/resume", { method: "POST" });
+}
+
+export function changeSubscriptionPlan(planCode: string) {
+  return apiFetch("/subscriptions/me/plan", { method: "POST", body: JSON.stringify({ planCode }) });
+}
+
+export function applySubscriptionCoupon(code: string) {
+  return apiFetch("/subscriptions/me/coupon", { method: "POST", body: JSON.stringify({ code }) }) as Promise<SubscriptionState>;
+}
+
+export function removeSubscriptionCoupon() {
+  return apiFetch("/subscriptions/me/coupon", { method: "DELETE" }) as Promise<SubscriptionState>;
+}
+
+// ---------------------------------------------------------------------------
+// Supplier payment methods (own; secrets encrypted server-side)
+// ---------------------------------------------------------------------------
+
+export interface PaymentMethod {
+  id: string;
+  provider: string;
+  label?: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  status: string;
+  stripeAccountId?: string | null;
+  maskedConfig: Record<string, string>;
+  createdAt: string;
+}
+
+export function getPaymentMethods() {
+  return apiFetch("/payment-methods") as Promise<PaymentMethod[]>;
+}
+
+export function createPaymentMethod(input: {
+  provider: string;
+  label?: string;
+  config?: Record<string, unknown>;
+  isDefault?: boolean;
+}) {
+  return apiFetch("/payment-methods", { method: "POST", body: JSON.stringify(input) }) as Promise<PaymentMethod>;
+}
+
+export function updatePaymentMethod(
+  id: string,
+  input: { label?: string; config?: Record<string, unknown>; isActive?: boolean; isDefault?: boolean },
+) {
+  return apiFetch(`/payment-methods/${id}`, { method: "PATCH", body: JSON.stringify(input) }) as Promise<PaymentMethod>;
+}
+
+export function deletePaymentMethod(id: string) {
+  return apiFetch(`/payment-methods/${id}`, { method: "DELETE" });
+}
+
+export interface StripeConnectStatus {
+  connected: boolean;
+  chargesEnabled: boolean;
+  detailsSubmitted: boolean;
+  payoutsEnabled?: boolean;
+  accountId: string | null;
+}
+
+export function startStripeConnect() {
+  return apiFetch("/payment-methods/stripe/connect", { method: "POST" }) as Promise<{ url: string }>;
+}
+
+export function getStripeConnectStatus() {
+  return apiFetch("/payment-methods/stripe/status") as Promise<StripeConnectStatus>;
+}
+
+// ---------------------------------------------------------------------------
+// Platform owner (admin) dashboard
+// ---------------------------------------------------------------------------
+
+export interface AdminOverview {
+  suppliers: { total: number; active: number; trial: number; expired: number; suspended: number; newThisMonth: number };
+  subscriptions: { active: number; cancelled: number };
+  revenue: { mrr: number; totalSubscriptionRevenue: number; currency: string };
+  customers: { total: number };
+  orders: { total: number; byStatus: { status: string; count: number }[] };
+}
+
+export interface AdminSupplier {
+  id: string;
+  companyName: string;
+  contactEmail: string;
+  country?: string | null;
+  city?: string | null;
+  status: string;
+  isVerified: boolean;
+  rating: number;
+  createdAt: string;
+  productCount: number;
+  orderCount: number;
+  subscription: {
+    status: string;
+    plan: string;
+    trialEndsAt: string | null;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+  } | null;
+}
+
+export function getAdminOverview() {
+  return apiFetch("/admin/overview") as Promise<AdminOverview>;
+}
+
+export function getAdminSuppliers(filters: { search?: string; country?: string; status?: string } = {}) {
+  const qs = new URLSearchParams(
+    Object.entries(filters).filter(([, v]) => v != null && v !== "") as [string, string][],
+  ).toString();
+  return apiFetch(`/admin/suppliers${qs ? `?${qs}` : ""}`) as Promise<AdminSupplier[]>;
+}
+
+export function suspendSupplier(id: string) {
+  return apiFetch(`/admin/suppliers/${id}/suspend`, { method: "PATCH" });
+}
+
+export function activateSupplier(id: string) {
+  return apiFetch(`/admin/suppliers/${id}/activate`, { method: "PATCH" });
+}
+
+export function deleteSupplierAdmin(id: string) {
+  return apiFetch(`/admin/suppliers/${id}`, { method: "DELETE" });
+}
+
+export interface AdminRevenue {
+  currency: string;
+  mrr: number;
+  monthlyRevenue: number;
+  annualRevenue: number;
+  totalSubscriptionRevenue: number;
+  totalTaxCollected: number;
+  totalDiscountsGiven: number;
+  trend: { month: string; revenue: number }[];
+  failedPayments: { id: string; supplier: string; amount: number; currency: string; reason?: string | null; createdAt: string }[];
+  upcomingRenewals: { id: string; supplier: string; plan: string; renewsAt: string }[];
+  cancelledSubscriptions: { id: string; supplier: string; plan: string; endsAt: string; status: string }[];
+}
+
+export function getAdminRevenue() {
+  return apiFetch("/admin/revenue") as Promise<AdminRevenue>;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  description?: string | null;
+  discountType: string;
+  discountValue: number;
+  isActive: boolean;
+  expiresAt?: string | null;
+  maxRedemptions?: number | null;
+  timesRedeemed: number;
+}
+
+export function getCoupons() {
+  return apiFetch("/admin/coupons") as Promise<Coupon[]>;
+}
+
+export function createCoupon(input: {
+  code: string;
+  description?: string;
+  discountType: string;
+  discountValue: number;
+  maxRedemptions?: number;
+  expiresAt?: string;
+}) {
+  return apiFetch("/admin/coupons", { method: "POST", body: JSON.stringify(input) }) as Promise<Coupon>;
+}
+
+export function updateCoupon(id: string, input: { isActive?: boolean }) {
+  return apiFetch(`/admin/coupons/${id}`, { method: "PATCH", body: JSON.stringify(input) }) as Promise<Coupon>;
+}
+
+export interface TaxRate {
+  id: string;
+  countryCode: string;
+  name: string;
+  ratePercent: number;
+  isActive: boolean;
+}
+
+export function getTaxRates() {
+  return apiFetch("/admin/tax-rates") as Promise<TaxRate[]>;
+}
+
+export function upsertTaxRate(input: { countryCode: string; name: string; ratePercent: number; isActive?: boolean }) {
+  return apiFetch("/admin/tax-rates", { method: "POST", body: JSON.stringify(input) }) as Promise<TaxRate>;
 }

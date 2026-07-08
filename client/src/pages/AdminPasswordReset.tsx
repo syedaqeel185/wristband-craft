@@ -50,7 +50,7 @@ const AdminPasswordReset = () => {
       });
 
       toast.success("Password updated successfully!");
-      navigate("/admin");
+      navigate("/supplier");
     } catch (error: any) {
       toast.error(error.message || "Failed to update password");
     } finally {

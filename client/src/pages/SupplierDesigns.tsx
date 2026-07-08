@@ -44,7 +44,7 @@ const SupplierDesigns = () => {
         setDesigns(data || []);
       } catch {
         toast.error("Could not load designs");
-        navigate("/admin");
+        navigate("/supplier");
       } finally {
         setLoading(false);
       }
@@ -76,7 +76,7 @@ const SupplierDesigns = () => {
     <div className="min-h-screen bg-gradient-subtle">
       <header className="border-b bg-card/50 backdrop-blur-sm">
         <div className="container mx-auto px-4 py-4 flex items-center gap-4 flex-wrap">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/admin")}>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/supplier")}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back
           </Button>

@@ -11,6 +11,16 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   fullName?: string;
+
+  // Optional at signup; used for country-aware supplier discovery.
+  @IsOptional()
+  @IsString()
+  countryCode?: string;
+}
+
+export class UpdateCountryDto {
+  @IsString()
+  countryCode: string;
 }
 
 export class LoginDto {

@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
 
 /** Columns a supplier is allowed to set on a Product (prevents mass-assignment). */
@@ -61,6 +62,7 @@ export class SuppliersService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private subscriptions: SubscriptionsService,
   ) {}
 
   private sanitizeTiers(tiers: any[]): Record<string, any>[] {
@@ -102,8 +104,18 @@ export class SuppliersService {
           contactEmail: dto.contactEmail,
           contactPhone: dto.contactPhone,
           address: dto.address,
+          countryCode: dto.countryCode?.toUpperCase(),
+          state: dto.state,
+          city: dto.city,
+          // Mirror the normalized code into the legacy string column so existing
+          // directory/display code keeps working during the transition.
+          country: dto.countryCode?.toUpperCase(),
         },
       });
+
+      // Every supplier starts on a 1-month free trial (same transaction so a
+      // supplier is never left without a subscription).
+      await this.subscriptions.createTrialForSupplier(supplier.id, prisma);
 
       return { user, supplier };
     });
@@ -152,10 +164,13 @@ export class SuppliersService {
     description: string | null;
     city: string | null;
     country: string | null;
+    countryCode: string | null;
     logoUrl: string | null;
     rating: number;
     reviewCount: number;
+    totalOrders: number;
     isVerified: boolean;
+    createdAt: Date;
     products: { wristbandType: string }[];
   }) {
     return {
@@ -164,24 +179,67 @@ export class SuppliersService {
       description: s.description,
       city: s.city,
       country: s.country,
+      countryCode: s.countryCode,
       logoUrl: s.logoUrl,
       rating: s.rating,
       reviewCount: s.reviewCount,
+      totalOrders: s.totalOrders,
       isVerified: s.isVerified,
+      createdAt: s.createdAt,
       productCount: s.products.length,
       services: Array.from(new Set(s.products.map((p) => p.wristbandType))),
     };
   }
 
-  /** Public homepage directory: company, location, rating, services (product types). */
-  async directory() {
+  /**
+   * Public supplier directory with country-aware ordering + filters.
+   *  - `country`  : only suppliers in this ISO-2 country.
+   *  - `category` : only suppliers offering this wristband type (active product).
+   *  - `minRating`: minimum average rating.
+   *  - `sort`     : rating (default) | newest | popular.
+   *  - `near`     : customer's country — when set (and no explicit `country`
+   *                 filter), local suppliers are floated to the top.
+   */
+  async directory(filters: {
+    country?: string;
+    category?: string;
+    minRating?: number;
+    sort?: string;
+    near?: string;
+  } = {}) {
+    const where: Prisma.SupplierWhereInput = { status: { not: 'SUSPENDED' } };
+    if (filters.country) where.countryCode = filters.country.toUpperCase();
+    if (typeof filters.minRating === 'number' && !Number.isNaN(filters.minRating)) {
+      where.rating = { gte: filters.minRating };
+    }
+    if (filters.category) {
+      where.products = { some: { isActive: true, wristbandType: filters.category } };
+    }
+
+    const orderBy: Prisma.SupplierOrderByWithRelationInput[] =
+      filters.sort === 'newest'
+        ? [{ createdAt: 'desc' }]
+        : filters.sort === 'popular'
+          ? [{ totalOrders: 'desc' }, { reviewCount: 'desc' }]
+          : [{ rating: 'desc' }, { reviewCount: 'desc' }, { companyName: 'asc' }];
+
     const suppliers = await this.prisma.supplier.findMany({
-      orderBy: [{ rating: 'desc' }, { reviewCount: 'desc' }, { companyName: 'asc' }],
-      include: {
-        products: { where: { isActive: true }, select: { wristbandType: true } },
-      },
+      where,
+      orderBy,
+      include: { products: { where: { isActive: true }, select: { wristbandType: true } } },
     });
-    return suppliers.map((s) => this.toDirectoryEntry(s));
+
+    let entries = suppliers.map((s) => this.toDirectoryEntry(s));
+
+    // Country-aware float: when a "near" country is provided and the caller
+    // isn't already filtering to a specific country, show locals first while
+    // preserving the chosen sort within each group.
+    const near = filters.near?.toUpperCase();
+    let mapped = entries.map((e) => ({ ...e, isLocal: !!near && e.countryCode === near }));
+    if (near && !filters.country) {
+      mapped = [...mapped].sort((a, b) => Number(b.isLocal) - Number(a.isLocal));
+    }
+    return mapped;
   }
 
   /** Suppliers the user has ordered from, most-recent first (for the dashboard). */
@@ -405,6 +463,10 @@ export class SuppliersService {
       where: { userId },
     });
     if (!supplier) throw new BadRequestException('Not a supplier');
+
+    // Gate: an active subscription (and a non-suspended account) is required to
+    // create new products. Existing products remain readable/editable.
+    await this.subscriptions.assertActive(supplier.id);
 
     const { pricingTiers } = dto;
     const productData = pick(dto, PRODUCT_WRITABLE_FIELDS);

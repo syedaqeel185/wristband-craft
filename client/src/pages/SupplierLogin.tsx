@@ -17,7 +17,7 @@ const SupplierLogin = () => {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      navigate('/admin');
+      navigate('/supplier');
     }
   }, [navigate]);
 
@@ -39,7 +39,8 @@ const SupplierLogin = () => {
 
       setToken(data.accessToken);
       toast.success('Signed in successfully!');
-      navigate('/admin');
+      // Platform owners land on the owner dashboard; suppliers on their console.
+      navigate(roles.includes('admin') ? '/platform' : '/supplier');
     } catch (error: any) {
       toast.error(error.message || 'Login failed');
     } finally {

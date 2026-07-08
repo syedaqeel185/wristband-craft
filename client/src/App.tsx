@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -23,6 +23,9 @@ import NotFound from "./pages/NotFound";
 import SupplierPricing from "./pages/SupplierPricing";
 import SupplierDesigns from "./pages/SupplierDesigns";
 import SupplierProducts from "./pages/SupplierProducts";
+import SupplierBilling from "./pages/SupplierBilling";
+import SupplierPayments from "./pages/SupplierPayments";
+import PlatformDashboard from "./pages/PlatformDashboard";
 
 // Removed clearOldSessions() to fix persistent login issue
 
@@ -92,7 +95,7 @@ const App = () => (
             }
           />
           <Route
-            path="/admin"
+            path="/supplier"
             element={
               <ProtectedRoute>
                 <AdminDashboard />
@@ -100,7 +103,7 @@ const App = () => (
             }
           />
           <Route
-            path="/admin/reset-password"
+            path="/supplier/reset-password"
             element={
               <ProtectedRoute>
                 <AdminPasswordReset />
@@ -108,7 +111,7 @@ const App = () => (
             }
           />
           <Route
-            path="/admin/pricing"
+            path="/supplier/pricing"
             element={
               <ProtectedRoute allowedRoles={['supplier']}>
                 <SupplierPricing />
@@ -116,7 +119,7 @@ const App = () => (
             }
           />
           <Route
-            path="/admin/designs"
+            path="/supplier/designs"
             element={
               <ProtectedRoute allowedRoles={['supplier', 'admin']}>
                 <SupplierDesigns />
@@ -124,13 +127,45 @@ const App = () => (
             }
           />
           <Route
-            path="/admin/products"
+            path="/supplier/products"
             element={
               <ProtectedRoute allowedRoles={['supplier']}>
                 <SupplierProducts />
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/supplier/billing"
+            element={
+              <ProtectedRoute allowedRoles={['supplier']}>
+                <SupplierBilling />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/supplier/payments"
+            element={
+              <ProtectedRoute allowedRoles={['supplier']}>
+                <SupplierPayments />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/platform"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <PlatformDashboard />
+              </ProtectedRoute>
+            }
+          />
+          {/* Back-compat: the supplier console used to live under /admin. */}
+          <Route path="/admin" element={<Navigate to="/supplier" replace />} />
+          <Route path="/admin/products" element={<Navigate to="/supplier/products" replace />} />
+          <Route path="/admin/pricing" element={<Navigate to="/supplier/pricing" replace />} />
+          <Route path="/admin/designs" element={<Navigate to="/supplier/designs" replace />} />
+          <Route path="/admin/billing" element={<Navigate to="/supplier/billing" replace />} />
+          <Route path="/admin/payments" element={<Navigate to="/supplier/payments" replace />} />
+          <Route path="/admin/reset-password" element={<Navigate to="/supplier/reset-password" replace />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
