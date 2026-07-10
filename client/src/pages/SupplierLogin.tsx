@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import { LogIn, Building2 } from "lucide-react";
+import { LogIn } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const SupplierLogin = () => {
   const navigate = useNavigate();
@@ -53,7 +54,7 @@ const SupplierLogin = () => {
       <Card className="w-full max-w-md shadow-xl animate-scale-in">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
-            <Building2 className="h-12 w-12 text-primary" />
+            <BrandLogo className="h-14 w-auto" />
           </div>
           <CardTitle className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
             Supplier / Admin Login

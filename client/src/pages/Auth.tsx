@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { LogIn } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const Auth = () => {
   const navigate = useNavigate();
@@ -142,6 +143,9 @@ const Auth = () => {
     <div className="min-h-screen bg-gradient-subtle flex items-center justify-center p-4">
       <Card className="w-full max-w-md shadow-xl animate-scale-in">
         <CardHeader className="space-y-1 text-center">
+          <div className="flex justify-center mb-2">
+            <BrandLogo className="h-12 w-auto" />
+          </div>
           <CardTitle className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
             {isSignUp ? "Create Account" : "Welcome Back"}
           </CardTitle>

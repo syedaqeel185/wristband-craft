@@ -44,6 +44,7 @@ import {
   type TaxRate,
 } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -227,6 +228,7 @@ const PlatformDashboard = () => {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
+            <BrandLogo className="h-9 w-auto mb-2" />
             <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
               Platform Owner Dashboard
             </h1>

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Building2, ArrowLeft } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const SupplierSignup = () => {
   const navigate = useNavigate();
@@ -105,6 +106,7 @@ const SupplierSignup = () => {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Home
           </Button>
+          <BrandLogo className="h-11 w-auto mb-1" />
           <CardTitle className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
             Supplier Registration
           </CardTitle>

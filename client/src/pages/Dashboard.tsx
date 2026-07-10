@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { toast } from "sonner";
 import { Palette, FileImage, Package, LogOut, ShoppingCart } from "lucide-react";
 import { DashboardSuppliers } from "@/components/DashboardSuppliers";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -36,11 +37,7 @@ const Dashboard = () => {
     <div className="min-h-screen bg-gradient-subtle">
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <Link to="/">
-            <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent cursor-pointer hover:opacity-80 transition-opacity">
-              EU Wristbands
-            </h1>
-          </Link>
+          <BrandLogo className="h-9 md:h-10 w-auto" />
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{userEmail}</span>
             <Button variant="outline" size="sm" className="relative" onClick={() => navigate("/order-summary")}>

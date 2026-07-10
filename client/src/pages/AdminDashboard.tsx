@@ -4,6 +4,7 @@ import { apiFetch, markOrderPaid } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -195,6 +196,7 @@ const AdminDashboard = () => {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back
           </Button>
+          <BrandLogo className="h-8 w-auto hidden sm:block" />
           <h1 className="text-2xl font-bold bg-gradient-primary bg-clip-text text-transparent flex-1">
             {isAdmin ? "Admin Dashboard" : "Supplier Dashboard"}
           </h1>

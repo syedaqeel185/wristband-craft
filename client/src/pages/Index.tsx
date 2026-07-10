@@ -3,8 +3,9 @@ import { apiFetch, clearToken, getCart } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import heroBanner from "@/assets/euw/hero-banner.jpg";
-import euwLogo from "@/assets/euw/euw-logo.jpg";
+import euwLogo from "@/assets/euw/logo.png";
 import shippingImg from "@/assets/euw/shipping.jpg";
+import { BrandLogo } from "@/components/BrandLogo";
 import saferImg from "@/assets/euw/safer-guests.jpg";
 import {
   ArrowRight,
@@ -93,14 +94,7 @@ const Index = () => {
       {/* Header */}
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b">
         <nav className="container mx-auto px-4 py-3 flex justify-between items-center">
-          <Link to="/" className="flex items-center gap-2">
-            <span className="text-2xl md:text-3xl font-extrabold tracking-tight" style={{ color: NAVY }}>
-              EU<span style={{ color: BLUE }}>W</span>
-            </span>
-            <span className="hidden sm:block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-              Europe Wristbands
-            </span>
-          </Link>
+          <BrandLogo className="h-9 md:h-11 w-auto" />
 
           <div className="flex gap-1.5 md:gap-3 items-center">
             {user ? (
@@ -125,11 +119,8 @@ const Index = () => {
               </>
             ) : (
               <>
-                <Button variant="ghost" size="sm" className="hidden md:inline-flex" onClick={() => navigate("/supplier-signup")}>
-                  Become a Reseller
-                </Button>
                 <Button variant="ghost" size="sm" onClick={() => navigate("/supplier-login")}>
-                  Reseller Login
+                  Supplier Login
                 </Button>
                 <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => navigate("/auth")}>
                   Sign In
@@ -140,7 +131,7 @@ const Index = () => {
                   style={{ backgroundColor: BLUE }}
                   onClick={() => navigate("/auth")}
                 >
-                  Create Account
+                  Get Started
                 </Button>
               </>
             )}
@@ -164,7 +155,7 @@ const Index = () => {
                 <span style={{ color: ORANGE }}>Stand Out.</span>
               </h1>
               <p className="text-lg text-slate-600 mt-5 max-w-xl">
-                Create premium-quality festival wristbands at Europe's lowest prices with an official EUW reseller.
+                Create premium-quality festival wristbands at Europe's lowest prices with trusted European suppliers.
                 Produced within <strong>24 hours</strong> and delivered in just a few days.
               </p>
               <div className="flex flex-wrap gap-3 mt-7">
@@ -229,7 +220,7 @@ const Index = () => {
           </div>
           <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
             {[
-              { n: "1", icon: MapPin, title: "Choose a supplier", sub: "Pick a trusted EUW reseller in your country." },
+              { n: "1", icon: MapPin, title: "Choose a supplier", sub: "Pick a trusted EUW supplier in your country." },
               { n: "2", icon: PenTool, title: "Design your band", sub: "Add your logo, text and colors in the studio." },
               { n: "3", icon: ShoppingCart, title: "Order in minutes", sub: "Place your order — it goes straight to the supplier." },
             ].map((s, i) => (
@@ -313,25 +304,27 @@ const Index = () => {
           </div>
         </section>
 
-        {/* Reseller CTA */}
+        {/* Supplier CTA */}
         <section className="container mx-auto px-4 py-16">
           <div className="rounded-3xl p-10 md:p-14 text-white grid md:grid-cols-[1.4fr_1fr] gap-8 items-center" style={{ backgroundColor: NAVY }}>
             <div>
-              <h2 className="text-3xl md:text-4xl font-bold mb-3">Grow your business as an EUW reseller</h2>
+              <h2 className="text-3xl md:text-4xl font-bold mb-3">Sell on EUW — become a supplier</h2>
               <p className="text-white/80 mb-6 max-w-xl">
-                Become an official EUW reseller today and offer your customers unbeatable quality, speed, and pricing.
+                Join EUW as a supplier and offer your customers unbeatable quality, speed, and pricing.
                 Manage your own products, payments and orders — we handle European production.
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button size="lg" className="text-white" style={{ backgroundColor: ORANGE }} onClick={() => navigate("/supplier-signup")}>
-                  <Building2 className="mr-2 h-5 w-5" /> Become a Reseller
+                  <Building2 className="mr-2 h-5 w-5" /> Become a Supplier
                 </Button>
                 <Button size="lg" variant="outline" className="bg-transparent text-white border-white/40 hover:bg-white/10" onClick={() => navigate("/supplier-login")}>
-                  Reseller Login
+                  Supplier Login
                 </Button>
               </div>
             </div>
-            <img src={euwLogo} alt="EUW — Europe Wristbands" className="rounded-xl w-full hidden md:block" />
+            <div className="hidden md:flex bg-white rounded-2xl p-8 items-center justify-center">
+              <img src={euwLogo} alt="EUW — Europe Wristbands" className="w-full" />
+            </div>
           </div>
         </section>
 
@@ -361,8 +354,8 @@ const Index = () => {
           <div className="text-sm space-y-2">
             <div className="font-semibold text-white/90 mb-2">Get started</div>
             <button className="block text-white/70 hover:text-white" onClick={() => navigate("/auth")}>Create a customer account</button>
-            <button className="block text-white/70 hover:text-white" onClick={() => navigate("/supplier-signup")}>Become a reseller</button>
-            <button className="block text-white/70 hover:text-white" onClick={() => navigate("/supplier-login")}>Reseller &amp; EUW login</button>
+            <button className="block text-white/70 hover:text-white" onClick={() => navigate("/supplier-signup")}>Sell on EUW (supplier)</button>
+            <button className="block text-white/70 hover:text-white" onClick={() => navigate("/supplier-login")}>Supplier login</button>
           </div>
           <div className="text-sm text-white/60">
             <div className="font-semibold text-white/90 mb-2">Why EUW</div>
