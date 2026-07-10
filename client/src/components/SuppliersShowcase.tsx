@@ -27,9 +27,10 @@ export const SuppliersShowcase = () => {
 
   return (
     <section className="container mx-auto px-4 py-20">
-      <h3 className="text-3xl md:text-4xl font-bold text-center mb-2">Our Suppliers</h3>
+      <h3 className="text-3xl md:text-4xl font-bold text-center mb-2">Find your supplier</h3>
       <p className="text-center text-muted-foreground mb-12 max-w-2xl mx-auto">
-        Browse verified wristband suppliers, see their services and ratings, and order directly from the one you choose.
+        Pick a trusted supplier in your country and get started designing your wristbands — see their services and
+        ratings, and order directly from the one you choose.
       </p>
       <div className="max-w-6xl mx-auto">
         <SupplierDirectory />
