@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { apiFetch, createCheckout, getCart, checkoutCart } from "@/lib/api";
+import { dhlShipping, dhlTierLabel } from "@/lib/shipping";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, ShoppingCart, Check } from "lucide-react";
+import { ArrowLeft, Loader2, ShoppingCart } from "lucide-react";
 
 interface LocationState {
   orderIds?: string[];
@@ -100,7 +101,11 @@ const Address = () => {
     setLoading(true);
     try {
       const expressValue = state.expressDelivery ? 19 : 0;
-      const extraCharges = expressValue ? { express: expressValue } : undefined;
+      const totalQty = draftOrders.reduce((n, o) => n + (o.quantity || 0), 0);
+      const shippingValue = dhlShipping(totalQty);
+      const extraCharges: Record<string, number> = {};
+      if (shippingValue) extraCharges.shipping = shippingValue;
+      if (expressValue) extraCharges.express = expressValue;
       const addr = { ...shippingAddress, notes: customizationNotes || undefined };
 
       let orderIds: string[];
@@ -159,6 +164,8 @@ const Address = () => {
   const currency = draftOrders[0]?.currency || "EUR";
   const currencySymbol = currency === "USD" ? "$" : currency === "GBP" ? "£" : "€";
   const subtotal = draftOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+  const totalQty = draftOrders.reduce((n, o) => n + (o.quantity || 0), 0);
+  const shippingFee = dhlShipping(totalQty);
   const expressDeliveryFee = state.expressDelivery ? 19 : 0;
 
   return (
@@ -210,18 +217,18 @@ const Address = () => {
                 <span className="font-medium">{currencySymbol}{subtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span>Express Delivery:</span>
-                <span className="font-medium">{currencySymbol}{expressDeliveryFee.toFixed(2)}</span>
+                <span>DHL shipping <span className="text-muted-foreground">({dhlTierLabel(totalQty)})</span></span>
+                <span className="font-medium">{currencySymbol}{shippingFee.toFixed(2)}</span>
               </div>
               {state.expressDelivery && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Check className="w-4 h-4" />
-                  Express delivery selected (2-3 days production)
+                <div className="flex justify-between text-sm">
+                  <span>Express production:</span>
+                  <span className="font-medium">{currencySymbol}{expressDeliveryFee.toFixed(2)}</span>
                 </div>
               )}
               <div className="flex justify-between text-lg font-bold border-t pt-2 text-primary">
                 <span>Total:</span>
-                <span>{currencySymbol}{(subtotal + expressDeliveryFee).toFixed(2)}</span>
+                <span>{currencySymbol}{(subtotal + shippingFee + expressDeliveryFee).toFixed(2)}</span>
               </div>
             </div>
           </Card>

@@ -157,7 +157,7 @@ const Index = () => {
                 className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider px-3 py-1 rounded-full mb-5"
                 style={{ backgroundColor: `${BLUE}14`, color: BLUE }}
               >
-                <Sparkles className="h-3.5 w-3.5" /> Official EUW reseller network
+                <Sparkles className="h-3.5 w-3.5" /> Premium wristbands · Made in Europe
               </span>
               <h1 className="text-4xl md:text-6xl font-extrabold leading-tight" style={{ color: NAVY }}>
                 Design. Order.{" "}

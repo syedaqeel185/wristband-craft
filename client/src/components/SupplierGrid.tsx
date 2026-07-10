@@ -155,9 +155,23 @@ export const SupplierGrid = ({
                   </Badge>
                 )}
               </div>
-              {(s.city || s.country) && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                  <MapPin className="h-3 w-3" /> {[s.city, s.country].filter(Boolean).join(", ")}
+              {(s.city || s.country || s.countryCode) && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5 mt-1">
+                  {s.countryCode ? (
+                    <img
+                      src={`https://flagcdn.com/20x15/${s.countryCode.toLowerCase()}.png`}
+                      alt={s.countryCode}
+                      width={18}
+                      height={13}
+                      className="rounded-[2px] shrink-0"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <MapPin className="h-3 w-3" />
+                  )}
+                  {[s.city, s.country].filter(Boolean).join(", ") || s.countryCode}
                 </p>
               )}
 

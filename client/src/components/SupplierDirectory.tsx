@@ -8,7 +8,9 @@ import {
 } from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { SupplierGrid } from "@/components/SupplierGrid";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Search } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -42,6 +44,7 @@ export const SupplierDirectory = () => {
   const [category, setCategory] = useState<string>("all");
   const [minRating, setMinRating] = useState<string>("0");
   const [sort, setSort] = useState<NonNullable<DirectoryFilters["sort"]>>("rating");
+  const [query, setQuery] = useState("");
 
   // Bootstrap: countries + the customer's country (default to local-first).
   useEffect(() => {
@@ -77,6 +80,15 @@ export const SupplierDirectory = () => {
 
   return (
     <div className="space-y-4">
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search suppliers by name, city or country…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="pl-9"
+        />
+      </div>
       <div className="flex flex-wrap gap-3">
         <Filter label="Country">
           <Select value={countrySel} onValueChange={setCountrySel}>
@@ -146,7 +158,16 @@ export const SupplierDirectory = () => {
           <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
       ) : (
-        <SupplierGrid suppliers={suppliers} emptyText="No suppliers match these filters." />
+        <SupplierGrid
+          suppliers={suppliers.filter((s) => {
+            const q = query.trim().toLowerCase();
+            if (!q) return true;
+            return [s.companyName, s.city, s.country, s.countryCode]
+              .filter(Boolean)
+              .some((v) => String(v).toLowerCase().includes(q));
+          })}
+          emptyText="No suppliers match your search or filters."
+        />
       )}
     </div>
   );

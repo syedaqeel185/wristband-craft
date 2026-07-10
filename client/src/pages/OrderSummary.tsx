@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getCart, updateCartItem, removeCartItem, type Cart } from "@/lib/api";
+import { dhlShipping, dhlTierLabel } from "@/lib/shipping";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -85,6 +86,8 @@ const OrderSummary = () => {
 
   const sym = SYMBOL[cart?.currency || "EUR"] || "€";
   const subtotal = cart?.subtotal || 0;
+  const totalQty = (cart?.items || []).reduce((n, i) => n + (i.quantity || 0), 0);
+  const shipping = dhlShipping(totalQty);
   const expressFee = expressDelivery ? 19 : 0;
   const empty = !cart || cart.items.length === 0;
 
@@ -176,9 +179,15 @@ const OrderSummary = () => {
               </div>
               <div className="space-y-1 border-t pt-3">
                 <div className="flex justify-between text-sm"><span>Subtotal</span><span>{sym}{subtotal.toFixed(2)}</span></div>
-                <div className="flex justify-between text-sm"><span>Express</span><span>{sym}{expressFee.toFixed(2)}</span></div>
+                <div className="flex justify-between text-sm">
+                  <span>DHL shipping <span className="text-muted-foreground">({dhlTierLabel(totalQty)})</span></span>
+                  <span>{sym}{shipping.toFixed(2)}</span>
+                </div>
+                {expressDelivery && (
+                  <div className="flex justify-between text-sm"><span>Express production</span><span>{sym}{expressFee.toFixed(2)}</span></div>
+                )}
                 <div className="flex justify-between text-lg font-bold border-t pt-2 text-primary">
-                  <span>Total</span><span>{sym}{(subtotal + expressFee).toFixed(2)}</span>
+                  <span>Total</span><span>{sym}{(subtotal + shipping + expressFee).toFixed(2)}</span>
                 </div>
               </div>
 
