@@ -138,6 +138,7 @@ export class AdminService {
       companyName: s.companyName,
       contactEmail: s.contactEmail,
       country: s.countryCode ?? s.country,
+      countryCode: s.countryCode,
       city: s.city,
       status: s.status,
       isVerified: s.isVerified,
@@ -178,6 +179,27 @@ export class AdminService {
       entityType: 'supplier',
       entityId: id,
       actor: { userId: actor.userId, role: 'admin' },
+    });
+    return updated;
+  }
+
+  async setSupplierCountry(id: string, countryCode: string, actor: { userId: string }) {
+    const supplier = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!supplier) throw new NotFoundException('Supplier not found');
+    const code = countryCode.trim().toUpperCase();
+    const country = await this.prisma.country.findUnique({ where: { code } });
+    if (!country) throw new BadRequestException('Unknown country code');
+    const updated = await this.prisma.supplier.update({
+      where: { id },
+      // Keep the legacy `country` string mirrored with the normalized code.
+      data: { countryCode: code, country: code },
+    });
+    await this.audit.log({
+      action: 'supplier.set_country',
+      entityType: 'supplier',
+      entityId: id,
+      actor: { userId: actor.userId, role: 'admin' },
+      metadata: { countryCode: code },
     });
     return updated;
   }

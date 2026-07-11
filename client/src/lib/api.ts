@@ -553,6 +553,7 @@ export interface AdminSupplier {
   companyName: string;
   contactEmail: string;
   country?: string | null;
+  countryCode?: string | null;
   city?: string | null;
   status: string;
   isVerified: boolean;
@@ -590,6 +591,13 @@ export function activateSupplier(id: string) {
 
 export function deleteSupplierAdmin(id: string) {
   return apiFetch(`/admin/suppliers/${id}`, { method: "DELETE" });
+}
+
+export function setSupplierCountry(id: string, countryCode: string) {
+  return apiFetch(`/admin/suppliers/${id}/country`, {
+    method: "PATCH",
+    body: JSON.stringify({ countryCode }),
+  });
 }
 
 export interface AdminRevenue {

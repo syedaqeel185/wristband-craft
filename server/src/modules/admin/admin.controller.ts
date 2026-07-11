@@ -17,6 +17,7 @@ import { AdminService } from './admin.service';
 import {
   CreateCouponDto,
   CreatePlanDto,
+  SetSupplierCountryDto,
   UpdateCouponDto,
   UpdatePlanDto,
   UpdateSubscriptionDto,
@@ -56,6 +57,11 @@ export class AdminController {
   @Patch('suppliers/:id/activate')
   activate(@Request() req: any, @Param('id') id: string) {
     return this.admin.setSupplierStatus(id, 'ACTIVE', { userId: req.user.id });
+  }
+
+  @Patch('suppliers/:id/country')
+  setCountry(@Request() req: any, @Param('id') id: string, @Body() dto: SetSupplierCountryDto) {
+    return this.admin.setSupplierCountry(id, dto.countryCode, { userId: req.user.id });
   }
 
   @Delete('suppliers/:id')

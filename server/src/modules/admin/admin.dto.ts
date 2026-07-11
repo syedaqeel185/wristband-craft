@@ -102,6 +102,12 @@ export class UpdateCouponDto {
   @IsOptional() @IsInt() @Min(1) maxRedemptions?: number;
 }
 
+export class SetSupplierCountryDto {
+  @IsString()
+  @MinLength(2)
+  countryCode: string;
+}
+
 export class UpsertTaxRateDto {
   @IsString()
   @MinLength(2)

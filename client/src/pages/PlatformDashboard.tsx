@@ -28,6 +28,7 @@ import {
   suspendSupplier,
   activateSupplier,
   deleteSupplierAdmin,
+  setSupplierCountry,
   getCountries,
   getAdminRevenue,
   getCoupons,
@@ -357,7 +358,35 @@ const PlatformDashboard = () => {
                           <div className="font-medium">{s.companyName}</div>
                           <div className="text-xs text-muted-foreground">{s.contactEmail}</div>
                         </TableCell>
-                        <TableCell>{s.country ?? "—"}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {s.countryCode && (
+                              <img
+                                src={`https://flagcdn.com/20x15/${s.countryCode.toLowerCase()}.png`}
+                                alt={s.countryCode}
+                                width={18}
+                                height={13}
+                                className="rounded-[2px] shrink-0"
+                                onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
+                              />
+                            )}
+                            <Select
+                              value={s.countryCode ?? ""}
+                              onValueChange={(v) => act(() => setSupplierCountry(s.id, v), "Country updated")}
+                            >
+                              <SelectTrigger className="h-8 w-32 text-xs">
+                                <SelectValue placeholder="Set country" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {countries.map((c) => (
+                                  <SelectItem key={c.code} value={c.code}>
+                                    {c.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </TableCell>
                         <TableCell>
                           {s.subscription ? (
                             <div className="flex items-center gap-2">
