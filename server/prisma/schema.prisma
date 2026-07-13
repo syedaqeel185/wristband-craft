@@ -389,7 +389,7 @@ model SubscriptionPayment {
 model SupplierPaymentMethod {
   id              String   @id @default(uuid())
   supplierId      String   @map("supplier_id")
-  // STRIPE_CONNECT | PAYPAL | BANK_TRANSFER | JAZZCASH | EASYPAISA | MANUAL
+  // STRIPE_CONNECT | PAYPAL | PAYONEER | BANK_TRANSFER | JAZZCASH | EASYPAISA | MANUAL
   provider        String
   label           String?
   isDefault       Boolean  @default(false) @map("is_default")

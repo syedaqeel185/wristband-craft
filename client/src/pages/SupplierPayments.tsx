@@ -56,6 +56,13 @@ const MANUAL_PROVIDERS: Record<string, { label: string; fields: { key: string; l
     label: "PayPal",
     fields: [{ key: "paypalEmail", label: "PayPal email" }],
   },
+  PAYONEER: {
+    label: "Payoneer",
+    fields: [
+      { key: "payoneerEmail", label: "Payoneer email" },
+      { key: "payeeId", label: "Payoneer customer ID (optional)" },
+    ],
+  },
   MANUAL: {
     label: "Other / Manual",
     fields: [{ key: "instructions", label: "Payment instructions" }],
@@ -264,8 +271,8 @@ const SupplierPayments = () => {
           <CardHeader>
             <CardTitle>Bank & wallet methods</CardTitle>
             <CardDescription>
-              Bank transfer, JazzCash, EasyPaisa, PayPal or custom instructions. Customers see these details and
-              pay you directly; you confirm receipt from your orders.
+              Bank transfer, JazzCash, EasyPaisa, PayPal, Payoneer or custom instructions. Customers see these
+              details and pay you directly; you confirm receipt from your orders.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

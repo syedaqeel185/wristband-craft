@@ -3,6 +3,7 @@ import { IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'clas
 export const PAYMENT_PROVIDERS = [
   'STRIPE_CONNECT',
   'PAYPAL',
+  'PAYONEER',
   'BANK_TRANSFER',
   'JAZZCASH',
   'EASYPAISA',

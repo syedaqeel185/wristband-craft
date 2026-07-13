@@ -126,7 +126,10 @@ export class PaymentMethodsService {
           provider: dto.provider,
           label: dto.label,
           isDefault: makeDefault,
-          status: dto.provider === 'MANUAL' || dto.provider === 'BANK_TRANSFER' ? 'CONNECTED' : 'PENDING',
+          // Offline/manual methods (bank, wallet, PayPal, Payoneer, …) are usable
+          // as soon as they're added; only Stripe Connect stays PENDING until the
+          // supplier finishes hosted onboarding.
+          status: dto.provider === 'STRIPE_CONNECT' ? 'PENDING' : 'CONNECTED',
           configEncrypted: dto.config ? encryptJson(dto.config) : null,
         },
       });
