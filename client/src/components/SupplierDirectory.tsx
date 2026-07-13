@@ -23,6 +23,9 @@ import { Loader2 } from "lucide-react";
 const CATEGORIES = ["silicone", "fabric", "tyvek", "vinyl", "event"];
 const SORTS: { value: NonNullable<DirectoryFilters["sort"]>; label: string }[] = [
   { value: "rating", label: "Top rated" },
+  { value: "rating_asc", label: "Lowest rated" },
+  { value: "price_asc", label: "Price: Low → High" },
+  { value: "price_desc", label: "Price: High → Low" },
   { value: "popular", label: "Most popular" },
   { value: "newest", label: "Newest" },
 ];

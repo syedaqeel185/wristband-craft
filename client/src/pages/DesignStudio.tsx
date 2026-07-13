@@ -396,9 +396,13 @@ const DesignStudio = () => {
         const products = (await apiFetch(`/suppliers/${selectedSupplierId}/products`)) || [];
         setSupplierProducts(products);
         if (products.length > 0 && !isRestoringRef.current) {
-          setSelectedProductId(products[0].id);
-          setWristbandType(products[0].wristbandType as WristbandType);
-          setQuantity(products[0].minOrderQuantity || 1000);
+          // Honour a product chosen from a storefront ("Customize this product").
+          const preferredProduct = localStorage.getItem("preferred_product");
+          if (preferredProduct) localStorage.removeItem("preferred_product");
+          const chosen = (preferredProduct && products.find((p: any) => p.id === preferredProduct)) || products[0];
+          setSelectedProductId(chosen.id);
+          setWristbandType(chosen.wristbandType as WristbandType);
+          setQuantity(chosen.minOrderQuantity || 1000);
         }
       } catch (e) {
         console.error("Failed to load supplier products:", e);

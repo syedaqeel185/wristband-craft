@@ -1,11 +1,15 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { SuppliersService } from './suppliers.service';
+import { ShippingService } from '../shipping/shipping.service';
 import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
 
 @Controller('suppliers')
 export class SuppliersController {
-  constructor(private readonly suppliersService: SuppliersService) {}
+  constructor(
+    private readonly suppliersService: SuppliersService,
+    private readonly shippingService: ShippingService,
+  ) {}
 
   @Post('register')
   register(@Body() dto: SupplierRegisterDto) {
@@ -60,6 +64,32 @@ export class SuppliersController {
     return this.suppliersService.deleteProduct(req.user.id, productId);
   }
 
+  // ---- Delivery / couriers (current supplier) ----
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/shipping')
+  getMyShipping(@Request() req: any) {
+    return this.shippingService.listMine(req.user.id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('me/shipping')
+  createShipping(@Request() req: any, @Body() dto: any) {
+    return this.shippingService.create(req.user.id, dto);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('me/shipping/:rateId')
+  updateShipping(@Request() req: any, @Param('rateId') rateId: string, @Body() dto: any) {
+    return this.shippingService.update(req.user.id, rateId, dto);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Delete('me/shipping/:rateId')
+  deleteShipping(@Request() req: any, @Param('rateId') rateId: string) {
+    return this.shippingService.remove(req.user.id, rateId);
+  }
+
   // ---- Reviews (current user) ----
 
   @UseGuards(AuthGuard('jwt'))
@@ -108,6 +138,16 @@ export class SuppliersController {
   @Get()
   list() {
     return this.suppliersService.findAll();
+  }
+
+  @Get(':id/profile')
+  getProfile(@Param('id') id: string) {
+    return this.suppliersService.getPublicProfile(id);
+  }
+
+  @Get(':id/shipping')
+  getShippingForSupplier(@Param('id') id: string) {
+    return this.shippingService.listForSupplier(id);
   }
 
   @Get(':id/reviews')

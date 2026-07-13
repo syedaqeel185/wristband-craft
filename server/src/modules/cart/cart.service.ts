@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { OrdersService } from '../orders/orders.service';
+import { ShippingService } from '../shipping/shipping.service';
 import { AddCartItemDto, CartCheckoutDto, UpdateCartItemDto } from './cart.dto';
 
 type Currency = 'USD' | 'EUR' | 'GBP';
@@ -12,7 +13,32 @@ export class CartService {
     private readonly prisma: PrismaService,
     private readonly pricing: PricingService,
     private readonly orders: OrdersService,
+    private readonly shipping: ShippingService,
   ) {}
+
+  /**
+   * Server-authoritative delivery cost per supplier: groups items by supplier,
+   * sums each supplier's quantity, and asks ShippingService for the rate. The
+   * customer's browser never dictates shipping.
+   */
+  private async computeShippingBreakdown(
+    items: { supplierId: string | null; quantity: number }[],
+    currency: Currency,
+  ) {
+    const qtyBySupplier = new Map<string, number>();
+    for (const item of items) {
+      if (!item.supplierId) continue;
+      qtyBySupplier.set(item.supplierId, (qtyBySupplier.get(item.supplierId) || 0) + item.quantity);
+    }
+    const perSupplier = await Promise.all(
+      [...qtyBySupplier.entries()].map(async ([supplierId, quantity]) => {
+        const quote = await this.shipping.computeShipping(supplierId, quantity, currency);
+        return { supplierId, quantity, ...quote };
+      }),
+    );
+    const total = perSupplier.reduce((s, q) => s + (q.cost || 0), 0);
+    return { perSupplier, total: Math.round(total * 100) / 100 };
+  }
 
   private async getOrCreateCart(userId: string) {
     const existing = await this.prisma.cart.findUnique({ where: { userId } });
@@ -75,12 +101,18 @@ export class CartService {
     );
 
     const subtotal = priced.reduce((s, i) => s + (i.lineTotal || 0), 0);
+    const currency = (priced[0]?.currency as Currency) || 'EUR';
+    const shipping = await this.computeShippingBreakdown(
+      priced.map((i) => ({ supplierId: i.supplierId, quantity: i.quantity })),
+      currency,
+    );
     return {
       id: cart.id,
-      currency: priced[0]?.currency || 'EUR',
+      currency,
       items: priced,
       subtotal: Math.round(subtotal * 100) / 100,
       count: priced.length,
+      shipping,
     };
   }
 
@@ -164,9 +196,35 @@ export class CartService {
     const items = await this.prisma.cartItem.findMany({ where: { cartId: cart.id } });
     if (items.length === 0) throw new BadRequestException('Your cart is empty');
 
+    const currency = (items[0]?.currency as Currency) || 'EUR';
+    // Delivery is computed server-side per supplier — the client's `extraCharges`
+    // shipping is ignored (only the checkout-wide express fee is honoured).
+    const shipping = await this.computeShippingBreakdown(
+      items.map((i) => ({ supplierId: i.supplierId, quantity: i.quantity })),
+      currency,
+    );
+    const shippingBySupplier = new Map(shipping.perSupplier.map((s) => [s.supplierId, s]));
+    const chargedSuppliers = new Set<string>();
+    const express = Number(dto.extraCharges?.express) || 0;
+
     const orderIds: string[] = [];
     for (const [index, item] of items.entries()) {
       const options = this.parse(item.optionsJson);
+
+      // Build authoritative extra charges for this line.
+      const extra: Record<string, number | string> = {};
+      // Shipping is charged once per supplier — on that supplier's first line.
+      if (item.supplierId && !chargedSuppliers.has(item.supplierId)) {
+        chargedSuppliers.add(item.supplierId);
+        const sq = shippingBySupplier.get(item.supplierId);
+        if (sq && sq.cost) {
+          extra.shipping = sq.cost;
+          extra.shippingCourier = sq.courier;
+        }
+      }
+      // Express applies to the checkout as a whole — fold into the first line.
+      if (index === 0 && express) extra.express = express;
+
       const order = await this.orders.create(userId, {
         userId,
         designId: item.designId ?? undefined,
@@ -181,9 +239,7 @@ export class CartService {
         printType: options.printType,
         customizationNotes: item.optionsJson ?? undefined,
         shippingAddress: dto.shippingAddress,
-        // One-time charges (e.g. express delivery) apply to the checkout as a
-        // whole, not per line item — only fold them into the first order.
-        extraCharges: index === 0 ? dto.extraCharges : undefined,
+        extraCharges: Object.keys(extra).length ? extra : undefined,
       });
       orderIds.push(order.id);
     }

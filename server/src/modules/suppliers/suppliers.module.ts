@@ -4,11 +4,13 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { SuppliersService } from './suppliers.service';
 import { SuppliersController } from './suppliers.controller';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { ShippingModule } from '../shipping/shipping.module';
 
 @Module({
   imports: [
     PrismaModule,
     SubscriptionsModule,
+    ShippingModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },

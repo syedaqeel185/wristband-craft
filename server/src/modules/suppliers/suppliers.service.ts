@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { ShippingService } from '../shipping/shipping.service';
 import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
 
 /** Columns a supplier is allowed to set on a Product (prevents mass-assignment). */
@@ -63,7 +64,25 @@ export class SuppliersService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private subscriptions: SubscriptionsService,
+    private shipping: ShippingService,
   ) {}
+
+  /** Parse a Product.imageUrls JSON string into a clean string[]. */
+  private parseImages(imageUrls?: string | null): string[] {
+    if (!imageUrls) return [];
+    try {
+      const v = JSON.parse(imageUrls);
+      return Array.isArray(v) ? v.filter((u) => typeof u === 'string' && u) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Lowest per-unit price a supplier offers, for price sorting. null if no products. */
+  private minProductPrice(products: { priceEur: number | null; priceUsd: number }[]): number | null {
+    const prices = products.map((p) => p.priceEur ?? p.priceUsd).filter((n) => typeof n === 'number');
+    return prices.length ? Math.min(...prices) : null;
+  }
 
   private sanitizeTiers(tiers: any[]): Record<string, any>[] {
     return (Array.isArray(tiers) ? tiers : []).map((t) =>
@@ -171,7 +190,7 @@ export class SuppliersService {
     totalOrders: number;
     isVerified: boolean;
     createdAt: Date;
-    products: { wristbandType: string }[];
+    products: { wristbandType: string; priceEur: number | null; priceUsd: number }[];
   }) {
     return {
       id: s.id,
@@ -188,6 +207,7 @@ export class SuppliersService {
       createdAt: s.createdAt,
       productCount: s.products.length,
       services: Array.from(new Set(s.products.map((p) => p.wristbandType))),
+      fromPrice: this.minProductPrice(s.products),
     };
   }
 
@@ -221,15 +241,35 @@ export class SuppliersService {
         ? [{ createdAt: 'desc' }]
         : filters.sort === 'popular'
           ? [{ totalOrders: 'desc' }, { reviewCount: 'desc' }]
-          : [{ rating: 'desc' }, { reviewCount: 'desc' }, { companyName: 'asc' }];
+          : filters.sort === 'rating_asc'
+            ? [{ rating: 'asc' }, { reviewCount: 'desc' }, { companyName: 'asc' }]
+            : [{ rating: 'desc' }, { reviewCount: 'desc' }, { companyName: 'asc' }];
 
     const suppliers = await this.prisma.supplier.findMany({
       where,
       orderBy,
-      include: { products: { where: { isActive: true }, select: { wristbandType: true } } },
+      include: {
+        products: {
+          where: { isActive: true },
+          select: { wristbandType: true, priceEur: true, priceUsd: true },
+        },
+      },
     });
 
     let entries = suppliers.map((s) => this.toDirectoryEntry(s));
+
+    // Price sorts depend on each supplier's minimum product price, which is a
+    // relation aggregate Prisma can't orderBy directly — sort in memory.
+    // Suppliers with no products (no price) always sort last.
+    if (filters.sort === 'price_asc' || filters.sort === 'price_desc') {
+      const dir = filters.sort === 'price_asc' ? 1 : -1;
+      entries = [...entries].sort((a, b) => {
+        if (a.fromPrice == null && b.fromPrice == null) return 0;
+        if (a.fromPrice == null) return 1;
+        if (b.fromPrice == null) return -1;
+        return (a.fromPrice - b.fromPrice) * dir;
+      });
+    }
 
     // Country-aware float: when a "near" country is provided and the caller
     // isn't already filtering to a specific country, show locals first while
@@ -257,13 +297,78 @@ export class SuppliersService {
 
     const suppliers = await this.prisma.supplier.findMany({
       where: { id: { in: orderedIds } },
-      include: { products: { where: { isActive: true }, select: { wristbandType: true } } },
+      include: {
+        products: {
+          where: { isActive: true },
+          select: { wristbandType: true, priceEur: true, priceUsd: true },
+        },
+      },
     });
     const byId = new Map(suppliers.map((s) => [s.id, s]));
     return orderedIds
       .map((id) => byId.get(id))
       .filter((s): s is NonNullable<typeof s> => !!s)
       .map((s) => this.toDirectoryEntry(s));
+  }
+
+  /**
+   * Public supplier storefront: company info + active products (with parsed
+   * image galleries + pricing) + reviews + delivery couriers + aggregate stats.
+   * Deliberately exposes only aggregate order counts — never other customers'
+   * order data.
+   */
+  async getPublicProfile(supplierId: string) {
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: {
+        id: true,
+        companyName: true,
+        description: true,
+        logoUrl: true,
+        website: true,
+        city: true,
+        country: true,
+        countryCode: true,
+        rating: true,
+        reviewCount: true,
+        totalOrders: true,
+        isVerified: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    if (!supplier || supplier.status === 'SUSPENDED') {
+      throw new BadRequestException('Supplier not found');
+    }
+
+    const [products, reviews, shipping] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { supplierId, isActive: true },
+        include: { pricingTiers: { orderBy: { minQuantity: 'asc' } } },
+        orderBy: { name: 'asc' },
+      }),
+      this.getReviews(supplierId),
+      this.shipping.listForSupplier(supplierId),
+    ]);
+
+    const productsWithImages = products.map((p) => ({
+      ...p,
+      images: this.parseImages(p.imageUrls),
+    }));
+
+    return {
+      supplier,
+      products: productsWithImages,
+      reviews,
+      shipping,
+      stats: {
+        productCount: products.length,
+        ordersFulfilled: supplier.totalOrders,
+        memberSince: supplier.createdAt,
+        rating: supplier.rating,
+        reviewCount: supplier.reviewCount,
+      },
+    };
   }
 
   async getReviews(supplierId: string) {

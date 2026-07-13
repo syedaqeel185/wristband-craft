@@ -1,13 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, uploadImage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Trash2, Save, Edit2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Save, Edit2, ImagePlus, X, Star, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +39,8 @@ interface Product {
   allowsCustomText: boolean;
   allowsCustomColor: boolean;
   allowsLogoUpload: boolean;
+  // Product photo gallery, persisted as a JSON string of URLs (first = primary).
+  imageUrls?: string;
   // Customization add-on pricing (read by the dynamic pricing engine)
   printExtraUsd: number;
   colorPrintExtraUsd: number;
@@ -62,6 +64,7 @@ const EMPTY_PRODUCT: Product = {
   allowsCustomText: true,
   allowsCustomColor: true,
   allowsLogoUpload: true,
+  imageUrls: "[]",
   printExtraUsd: 0,
   colorPrintExtraUsd: 0,
   logoExtraUsd: 0,
@@ -87,10 +90,52 @@ const SupplierProducts = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product>(EMPTY_PRODUCT);
   const [isEditMode, setIsEditMode] = useState(false);
+  const [images, setImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchProducts();
   }, []);
+
+  const parseImages = (value?: string): string[] => {
+    if (!value) return [];
+    try {
+      const v = JSON.parse(value);
+      return Array.isArray(v) ? v.filter((u) => typeof u === "string" && u) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const handleUploadImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    try {
+      const uploaded: string[] = [];
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) {
+          toast.error(`${file.name} is not an image`);
+          continue;
+        }
+        const { url } = await uploadImage(file);
+        uploaded.push(url);
+      }
+      if (uploaded.length) {
+        setImages((prev) => [...prev, ...uploaded]);
+        toast.success(`${uploaded.length} photo${uploaded.length !== 1 ? "s" : ""} added`);
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Failed to upload photo");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const removeImage = (idx: number) => setImages((prev) => prev.filter((_, i) => i !== idx));
+  const makePrimary = (idx: number) =>
+    setImages((prev) => (idx <= 0 ? prev : [prev[idx], ...prev.filter((_, i) => i !== idx)]));
 
   const fetchProducts = async () => {
     try {
@@ -106,12 +151,14 @@ const SupplierProducts = () => {
 
   const openCreate = () => {
     setEditingProduct({ ...EMPTY_PRODUCT, pricingTiers: [] });
+    setImages([]);
     setIsEditMode(false);
     setDialogOpen(true);
   };
 
   const openEdit = (product: Product) => {
     setEditingProduct({ ...product });
+    setImages(parseImages(product.imageUrls));
     setIsEditMode(true);
     setDialogOpen(true);
   };
@@ -124,16 +171,17 @@ const SupplierProducts = () => {
 
     setSaving(true);
     try {
+      const payload = { ...editingProduct, imageUrls: JSON.stringify(images) };
       if (isEditMode && editingProduct.id) {
         await apiFetch(`/suppliers/me/products/${editingProduct.id}`, {
           method: "PATCH",
-          body: JSON.stringify(editingProduct),
+          body: JSON.stringify(payload),
         });
         toast.success("Product updated");
       } else {
         await apiFetch("/suppliers/me/products", {
           method: "POST",
-          body: JSON.stringify(editingProduct),
+          body: JSON.stringify(payload),
         });
         toast.success("Product created");
       }
@@ -220,8 +268,18 @@ const SupplierProducts = () => {
           products.map((product: any) => (
             <Card key={product.id} className="shadow">
               <CardContent className="pt-4">
-                <div className="flex items-start justify-between">
-                  <div>
+                <div className="flex items-start justify-between gap-4">
+                  {(() => {
+                    const primary = parseImages(product.imageUrls)[0];
+                    return primary ? (
+                      <img
+                        src={primary}
+                        alt={product.name}
+                        className="w-20 h-20 rounded-lg object-cover border shrink-0"
+                      />
+                    ) : null;
+                  })()}
+                  <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold text-lg">{product.name}</h3>
                       <span className={`text-xs px-2 py-0.5 rounded-full ${product.isActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
@@ -306,6 +364,61 @@ const SupplierProducts = () => {
                 <Label>Max Order Quantity (optional)</Label>
                 <Input type="number" value={editingProduct.maxOrderQuantity ?? ""} onChange={e => updateField("maxOrderQuantity", e.target.value === "" ? null : parseInt(e.target.value))} />
               </div>
+            </div>
+
+            <div className="border-t pt-4">
+              <div className="flex items-center justify-between mb-1">
+                <h4 className="font-medium">Product Photos</h4>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => handleUploadImages(e.target.files)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <ImagePlus className="h-4 w-4 mr-1" />}
+                  {uploading ? "Uploading…" : "Add Photos"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                These photos appear on your public storefront and product pages. The first photo is the main image.
+              </p>
+              {images.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-3 border border-dashed rounded-lg">
+                  No photos yet. Add product photos so customers can see what they're ordering.
+                </p>
+              ) : (
+                <div className="grid grid-cols-4 gap-3">
+                  {images.map((url, idx) => (
+                    <div key={url + idx} className="relative group aspect-square rounded-lg overflow-hidden border">
+                      <img src={url} alt={`Product photo ${idx + 1}`} className="w-full h-full object-cover" />
+                      {idx === 0 && (
+                        <span className="absolute top-1 left-1 bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                          <Star className="h-2.5 w-2.5 fill-current" /> Main
+                        </span>
+                      )}
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                        {idx !== 0 && (
+                          <Button type="button" size="sm" variant="secondary" className="h-7 px-2 text-xs" onClick={() => makePrimary(idx)}>
+                            Set main
+                          </Button>
+                        )}
+                        <Button type="button" size="icon" variant="destructive" className="h-7 w-7" onClick={() => removeImage(idx)}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="border-t pt-4">

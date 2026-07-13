@@ -25,6 +25,8 @@ import SupplierDesigns from "./pages/SupplierDesigns";
 import SupplierProducts from "./pages/SupplierProducts";
 import SupplierBilling from "./pages/SupplierBilling";
 import SupplierPayments from "./pages/SupplierPayments";
+import SupplierShipping from "./pages/SupplierShipping";
+import SupplierProfile from "./pages/SupplierProfile";
 import PlatformDashboard from "./pages/PlatformDashboard";
 
 // Removed clearOldSessions() to fix persistent login issue
@@ -46,6 +48,8 @@ const App = () => (
           <Route path="/supplier-signup" element={<SupplierSignup />} />
           <Route path="/payment-success" element={<PaymentSuccess />} />
           <Route path="/confirm-order" element={<ConfirmOrder />} />
+          {/* Public supplier storefront */}
+          <Route path="/suppliers/:id" element={<SupplierProfile />} />
           <Route
             path="/dashboard"
             element={
@@ -147,6 +151,14 @@ const App = () => (
             element={
               <ProtectedRoute allowedRoles={['supplier']}>
                 <SupplierPayments />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/supplier/shipping"
+            element={
+              <ProtectedRoute allowedRoles={['supplier']}>
+                <SupplierShipping />
               </ProtectedRoute>
             }
           />

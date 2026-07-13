@@ -1,14 +1,15 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { apiFetch, createCheckout, getCart, checkoutCart } from "@/lib/api";
+import { apiFetch, createCheckout, getCart, checkoutCart, type ShippingQuote } from "@/lib/api";
 import { dhlShipping, dhlTierLabel } from "@/lib/shipping";
+import { LocationPicker } from "@/components/LocationPicker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, ShoppingCart } from "lucide-react";
+import { ArrowLeft, Loader2, ShoppingCart, MapPin } from "lucide-react";
 
 interface LocationState {
   orderIds?: string[];
@@ -24,6 +25,9 @@ const Address = () => {
 
   const [draftOrders, setDraftOrders] = useState<any[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
+  // Server-authoritative delivery (per supplier). Present on the cart path.
+  const [cartShipping, setCartShipping] = useState<{ perSupplier: ShippingQuote[]; total: number } | null>(null);
+  const isCartPath = !(state.orderIds && state.orderIds.length > 0 && !state.fromCart);
   const [shippingAddress, setShippingAddress] = useState({
     name: "",
     address: "",
@@ -35,6 +39,7 @@ const Address = () => {
   });
   const [customizationNotes, setCustomizationNotes] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showMap, setShowMap] = useState(true);
 
   useEffect(() => {
     const loadFromCart = async () => {
@@ -56,6 +61,7 @@ const Address = () => {
             currency: i.currency,
           })),
         );
+        setCartShipping(cart.shipping ?? null);
       } catch {
         toast.error("Failed to load cart");
         navigate("/order-summary");
@@ -102,15 +108,15 @@ const Address = () => {
     try {
       const expressValue = state.expressDelivery ? 19 : 0;
       const totalQty = draftOrders.reduce((n, o) => n + (o.quantity || 0), 0);
-      const shippingValue = dhlShipping(totalQty);
-      const extraCharges: Record<string, number> = {};
-      if (shippingValue) extraCharges.shipping = shippingValue;
-      if (expressValue) extraCharges.express = expressValue;
       const addr = { ...shippingAddress, notes: customizationNotes || undefined };
 
       let orderIds: string[];
       if (state.orderIds && state.orderIds.length > 0 && !state.fromCart) {
-        // Legacy path: existing DRAFT orders.
+        // Legacy path: existing DRAFT orders — shipping still computed client-side.
+        const extraCharges: Record<string, number> = {};
+        const shippingValue = dhlShipping(totalQty);
+        if (shippingValue) extraCharges.shipping = shippingValue;
+        if (expressValue) extraCharges.express = expressValue;
         for (const order of draftOrders) {
           await apiFetch(`/orders/${order.id}/status`, {
             method: "PATCH",
@@ -125,7 +131,10 @@ const Address = () => {
         }
         orderIds = state.orderIds;
       } else {
-        // Cart path: server creates PLACED, server-priced orders and empties the cart.
+        // Cart path: the server computes authoritative per-supplier shipping at
+        // checkout — we only pass the checkout-wide express fee.
+        const extraCharges: Record<string, number> = {};
+        if (expressValue) extraCharges.express = expressValue;
         const res = await checkoutCart(addr, extraCharges);
         orderIds = res.orderIds;
       }
@@ -165,7 +174,8 @@ const Address = () => {
   const currencySymbol = currency === "USD" ? "$" : currency === "GBP" ? "£" : "€";
   const subtotal = draftOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
   const totalQty = draftOrders.reduce((n, o) => n + (o.quantity || 0), 0);
-  const shippingFee = dhlShipping(totalQty);
+  // Cart path uses the server-computed per-supplier shipping; legacy uses DHL.
+  const shippingFee = isCartPath ? cartShipping?.total ?? 0 : dhlShipping(totalQty);
   const expressDeliveryFee = state.expressDelivery ? 19 : 0;
 
   return (
@@ -216,10 +226,23 @@ const Address = () => {
                 <span>Subtotal:</span>
                 <span className="font-medium">{currencySymbol}{subtotal.toFixed(2)}</span>
               </div>
-              <div className="flex justify-between text-sm">
-                <span>DHL shipping <span className="text-muted-foreground">({dhlTierLabel(totalQty)})</span></span>
-                <span className="font-medium">{currencySymbol}{shippingFee.toFixed(2)}</span>
-              </div>
+              {isCartPath && cartShipping && cartShipping.perSupplier.length > 0 ? (
+                cartShipping.perSupplier.map((s) => (
+                  <div key={s.supplierId} className="flex justify-between text-sm">
+                    <span>
+                      Delivery <span className="text-muted-foreground">({s.courier}{s.isFallback ? "" : ""})</span>
+                    </span>
+                    <span className="font-medium">
+                      {s.cost > 0 ? `${currencySymbol}${s.cost.toFixed(2)}` : "Free"}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="flex justify-between text-sm">
+                  <span>Delivery {!isCartPath && <span className="text-muted-foreground">({dhlTierLabel(totalQty)})</span>}</span>
+                  <span className="font-medium">{currencySymbol}{shippingFee.toFixed(2)}</span>
+                </div>
+              )}
               {state.expressDelivery && (
                 <div className="flex justify-between text-sm">
                   <span>Express production:</span>
@@ -234,7 +257,31 @@ const Address = () => {
           </Card>
 
           <Card className="p-6">
-            <h2 className="text-xl font-semibold mb-4">Delivery Address</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">Delivery Address</h2>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowMap((v) => !v)}>
+                <MapPin className="h-4 w-4 mr-2" />
+                {showMap ? "Hide map" : "Pick on map"}
+              </Button>
+            </div>
+
+            {showMap && (
+              <div className="mb-4">
+                <LocationPicker
+                  onSelect={(loc) =>
+                    setShippingAddress((prev) => ({
+                      ...prev,
+                      address: loc.address || prev.address,
+                      city: loc.city || prev.city,
+                      state: loc.state || prev.state,
+                      zipCode: loc.zipCode || prev.zipCode,
+                      country: loc.country || prev.country,
+                    }))
+                  }
+                />
+              </div>
+            )}
+
             <div className="space-y-4">
               <div>
                 <Label htmlFor="name">Full Name *</Label>

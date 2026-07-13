@@ -53,6 +53,24 @@ export function clearToken() {
   localStorage.removeItem('token');
 }
 
+/**
+ * Upload an image file to Vercel Blob via the server and get back a public URL.
+ * Reuses the authenticated `/designs/upload` endpoint (multipart). We never
+ * embed images as base64 in JSON payloads (413 risk).
+ */
+export async function uploadImage(file: File): Promise<{ url: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch(`${API_URL}/designs/upload`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders() }, // no Content-Type — browser sets the multipart boundary
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.message || 'Upload failed');
+  return data as { url: string };
+}
+
 export interface OrderTracking {
   orderId: string;
   status: string;
@@ -257,13 +275,15 @@ export interface DirectorySupplier {
   isVerified: boolean;
   productCount: number;
   services: string[];
+  /** Lowest per-unit price the supplier offers (for price sorting/display). */
+  fromPrice?: number | null;
 }
 
 export interface DirectoryFilters {
   country?: string;
   category?: string;
   minRating?: number;
-  sort?: 'rating' | 'newest' | 'popular';
+  sort?: 'rating' | 'rating_asc' | 'newest' | 'popular' | 'price_asc' | 'price_desc';
   near?: string;
 }
 
@@ -315,12 +335,25 @@ export interface CartItem {
   lineTotal: number;
 }
 
+export interface ShippingQuote {
+  supplierId: string;
+  quantity: number;
+  courier: string;
+  label?: string | null;
+  cost: number;
+  estMinDays?: number | null;
+  estMaxDays?: number | null;
+  isFallback: boolean;
+}
+
 export interface Cart {
   id: string;
   currency: string;
   items: CartItem[];
   subtotal: number;
   count: number;
+  /** Server-authoritative delivery per supplier + total. */
+  shipping?: { perSupplier: ShippingQuote[]; total: number };
 }
 
 export interface AddCartItemInput {
@@ -353,6 +386,110 @@ export function checkoutCart(shippingAddress?: Record<string, any>, extraCharges
     method: "POST",
     body: JSON.stringify({ shippingAddress, extraCharges }),
   }) as Promise<{ orderIds: string[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// Delivery / couriers (per supplier)
+// ---------------------------------------------------------------------------
+
+export interface ShippingRateTier {
+  id?: string;
+  minQuantity: number;
+  maxQuantity?: number | null;
+  priceEur: number;
+  priceUsd?: number | null;
+  priceGbp?: number | null;
+}
+
+export interface ShippingRate {
+  id: string;
+  supplierId?: string;
+  courier: string;
+  label?: string | null;
+  freeOverQty?: number | null;
+  estMinDays?: number | null;
+  estMaxDays?: number | null;
+  isActive: boolean;
+  isDefault: boolean;
+  sortOrder: number;
+  tiers: ShippingRateTier[];
+}
+
+export type ShippingRateInput = Omit<ShippingRate, 'id' | 'supplierId'> & { id?: string };
+
+export function getMyShipping() {
+  return apiFetch('/suppliers/me/shipping') as Promise<ShippingRate[]>;
+}
+
+export function createShipping(input: ShippingRateInput) {
+  return apiFetch('/suppliers/me/shipping', { method: 'POST', body: JSON.stringify(input) }) as Promise<ShippingRate>;
+}
+
+export function updateShipping(id: string, input: Partial<ShippingRateInput>) {
+  return apiFetch(`/suppliers/me/shipping/${id}`, { method: 'PATCH', body: JSON.stringify(input) }) as Promise<ShippingRate>;
+}
+
+export function deleteShipping(id: string) {
+  return apiFetch(`/suppliers/me/shipping/${id}`, { method: 'DELETE' }) as Promise<{ success: boolean }>;
+}
+
+export function getSupplierShipping(supplierId: string) {
+  return apiFetch(`/suppliers/${supplierId}/shipping`) as Promise<ShippingRate[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Public supplier storefront
+// ---------------------------------------------------------------------------
+
+export interface StorefrontProduct {
+  id: string;
+  name: string;
+  description?: string | null;
+  wristbandType: string;
+  priceUsd: number;
+  priceEur?: number | null;
+  priceGbp?: number | null;
+  minOrderQuantity: number;
+  maxOrderQuantity?: number | null;
+  images: string[];
+  designSetupFeeUsd: number;
+  qrCodePriceUsd: number;
+  trademarkFeeUsd: number;
+  colorPrintExtraUsd: number;
+  logoExtraUsd: number;
+  pricingTiers: PricingTier[];
+}
+
+export interface SupplierProfile {
+  supplier: {
+    id: string;
+    companyName: string;
+    description?: string | null;
+    logoUrl?: string | null;
+    website?: string | null;
+    city?: string | null;
+    country?: string | null;
+    countryCode?: string | null;
+    rating: number;
+    reviewCount: number;
+    totalOrders: number;
+    isVerified: boolean;
+    createdAt: string;
+  };
+  products: StorefrontProduct[];
+  reviews: SupplierReview[];
+  shipping: ShippingRate[];
+  stats: {
+    productCount: number;
+    ordersFulfilled: number;
+    memberSince: string;
+    rating: number;
+    reviewCount: number;
+  };
+}
+
+export function getSupplierProfile(id: string) {
+  return apiFetch(`/suppliers/${id}/profile`) as Promise<SupplierProfile>;
 }
 
 export function getSupplierReviews(supplierId: string) {

@@ -211,6 +211,9 @@ const AdminDashboard = () => {
               <Button variant="outline" size="sm" onClick={() => navigate("/supplier/pricing")}>
                 Pricing
               </Button>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/shipping")}>
+                Delivery
+              </Button>
               <Button variant="outline" size="sm" onClick={() => navigate("/supplier/payments")}>
                 Payments
               </Button>

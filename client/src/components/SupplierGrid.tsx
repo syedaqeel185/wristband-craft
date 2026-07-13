@@ -147,7 +147,13 @@ export const SupplierGrid = ({
           <Card key={s.id} className="hover:shadow-xl transition-shadow flex flex-col">
             <CardContent className="pt-6 flex-1 flex flex-col">
               <div className="flex items-center gap-2 flex-wrap">
-                <h4 className="text-lg font-semibold">{s.companyName}</h4>
+                <button
+                  className="text-lg font-semibold hover:underline text-left"
+                  onClick={() => navigate(`/suppliers/${s.id}`)}
+                  title="View store"
+                >
+                  {s.companyName}
+                </button>
                 {s.isVerified && <BadgeCheck className="h-4 w-4 text-primary" />}
                 {s.isLocal && (
                   <Badge variant="secondary" className="text-xs">
@@ -205,12 +211,20 @@ export const SupplierGrid = ({
                 </div>
               </div>
 
+              {typeof s.fromPrice === "number" && (
+                <p className="text-sm mt-3">
+                  <span className="text-muted-foreground">From </span>
+                  <span className="font-semibold">€{s.fromPrice.toFixed(2)}</span>
+                  <span className="text-muted-foreground"> / unit</span>
+                </p>
+              )}
+
               <div className="flex gap-2 pt-4 border-t mt-auto">
-                <Button className="flex-1" onClick={() => designWith(s.id)}>
-                  Design with this supplier
+                <Button className="flex-1" onClick={() => navigate(`/suppliers/${s.id}`)}>
+                  View store
                 </Button>
-                <Button variant="outline" onClick={() => setReviewing(s)}>
-                  Reviews
+                <Button variant="outline" onClick={() => designWith(s.id)}>
+                  Design
                 </Button>
               </div>
             </CardContent>

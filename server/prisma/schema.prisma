@@ -223,10 +223,57 @@ model Supplier {
   subscription   Subscription?
   paymentMethods SupplierPaymentMethod[]
   transactions   PaymentTransaction[]
+  shippingRates  ShippingRate[]
 
   @@index([countryCode])
   @@index([status])
   @@map("suppliers")
+}
+
+// ---------------------------------------------------------------------------
+// Per-supplier delivery: couriers with quantity-tiered rates.
+// A supplier can offer several couriers (DHL, FedEx, …); one is the default.
+// Each courier has one or more quantity tiers (a flat rate is just a single
+// tier with minQuantity=1 and no max). Optional free-shipping-over-quantity
+// threshold and estimated delivery window.
+// ---------------------------------------------------------------------------
+
+model ShippingRate {
+  id          String   @id @default(uuid())
+  supplierId  String   @map("supplier_id")
+  courier     String
+  label       String?
+  freeOverQty Int?     @map("free_over_qty")
+  estMinDays  Int?     @map("est_min_days")
+  estMaxDays  Int?     @map("est_max_days")
+  isActive    Boolean  @default(true) @map("is_active")
+  isDefault   Boolean  @default(false) @map("is_default")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  supplier Supplier           @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  tiers    ShippingRateTier[]
+
+  @@index([supplierId])
+  @@map("shipping_rates")
+}
+
+model ShippingRateTier {
+  id             String @id @default(uuid())
+  shippingRateId String @map("shipping_rate_id")
+  minQuantity    Int    @map("min_quantity")
+  maxQuantity    Int?   @map("max_quantity")
+  priceEur       Float  @map("price_eur")
+  priceUsd       Float? @map("price_usd")
+  priceGbp       Float? @map("price_gbp")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  shippingRate ShippingRate @relation(fields: [shippingRateId], references: [id], onDelete: Cascade)
+
+  @@index([shippingRateId])
+  @@map("shipping_rate_tiers")
 }
 
 // ---------------------------------------------------------------------------
