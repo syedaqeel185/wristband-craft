@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, CreditCard, Loader2, Plus, Star, Trash2, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CreditCard, Loader2, Plus, Star, Trash2, CheckCircle2, AlertTriangle, ExternalLink } from "lucide-react";
 import {
   getPaymentMethods,
   createPaymentMethod,
@@ -67,6 +67,7 @@ const SupplierPayments = () => {
   const [searchParams] = useSearchParams();
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [connect, setConnect] = useState<StripeConnectStatus | null>(null);
+  const [connectNotice, setConnectNotice] = useState<{ message: string; setupUrl: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -95,13 +96,25 @@ const SupplierPayments = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const STRIPE_CONNECT_SETUP_URL = "https://dashboard.stripe.com/connect/accounts/overview";
+
   const handleConnect = async () => {
     setBusy(true);
     try {
       const { url } = await startStripeConnect();
+      // Stripe-hosted onboarding — send the supplier straight there.
       window.location.href = url;
     } catch (e: any) {
-      toast.error(e.message || "Could not start Stripe onboarding");
+      // Connect isn't enabled on the platform Stripe account yet (a one-time
+      // owner setup). Instead of a dead-end error, take them to the Stripe page
+      // where it's enabled, and leave an explanation on screen.
+      if (e.code === "CONNECT_NOT_ENABLED" || e.code === "CONNECT_ERROR" || e.setupUrl) {
+        const setupUrl = e.setupUrl || STRIPE_CONNECT_SETUP_URL;
+        setConnectNotice({ message: e.message || "Stripe Connect needs to be enabled first.", setupUrl });
+        window.open(setupUrl, "_blank", "noopener,noreferrer");
+      } else {
+        toast.error(e.message || "Could not start Stripe onboarding");
+      }
       setBusy(false);
     }
   };
@@ -195,16 +208,53 @@ const SupplierPayments = () => {
               )}
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             {connect?.connected ? (
               <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
                 <CheckCircle2 className="h-4 w-4" /> Your Stripe account is ready to accept card payments.
               </div>
             ) : (
-              <Button onClick={handleConnect} disabled={busy}>
-                {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CreditCard className="h-4 w-4 mr-2" />}
-                {connect?.accountId ? "Continue Stripe setup" : "Connect with Stripe"}
-              </Button>
+              <>
+                <Button onClick={handleConnect} disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CreditCard className="h-4 w-4 mr-2" />}
+                  {connect?.accountId ? "Continue Stripe setup" : "Connect with Stripe"}
+                </Button>
+
+                {connectNotice && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <p className="text-amber-800 dark:text-amber-200">{connectNotice.message}</p>
+                    </div>
+                    <a
+                      href={connectNotice.setupUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-300 hover:underline"
+                    >
+                      Open Stripe Connect setup <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                    <p className="text-xs text-muted-foreground">
+                      Once Connect is enabled on the platform's Stripe account, come back and click
+                      “Connect with Stripe” again to finish.
+                    </p>
+                  </div>
+                )}
+
+                <p className="text-xs text-muted-foreground">
+                  Card payments run through Stripe Connect, which the platform owner enables once at{" "}
+                  <a
+                    href="https://dashboard.stripe.com/connect/accounts/overview"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-foreground"
+                  >
+                    dashboard.stripe.com/connect
+                  </a>
+                  . Stripe isn't available in every country (e.g. Pakistan) — if that's you, skip this and use a
+                  bank or wallet method below, which works right away.
+                </p>
+              </>
             )}
           </CardContent>
         </Card>

@@ -95,17 +95,35 @@ export class StripeConnectService {
 
       const link = await this.stripe.accountLinks.create({
         account: accountId,
-        refresh_url: `${this.clientUrl}/admin/payments?connect=refresh`,
-        return_url: `${this.clientUrl}/admin/payments?connect=return`,
+        refresh_url: `${this.clientUrl}/supplier/payments?connect=refresh`,
+        return_url: `${this.clientUrl}/supplier/payments?connect=return`,
         type: 'account_onboarding',
       });
       return { url: link.url };
     } catch (e) {
       const msg = (e as Error).message;
       this.logger.warn(`Stripe Connect onboarding failed: ${msg}`);
-      throw new BadRequestException(
-        `Stripe Connect could not be started: ${msg}. If you are the platform owner, enable Connect at https://dashboard.stripe.com/connect.`,
-      );
+
+      // The platform's own Stripe account hasn't enabled Connect yet. This is a
+      // one-time platform-owner action, not a supplier problem — surface a
+      // structured code + the exact Stripe page to enable it so the UI can send
+      // the owner straight there instead of showing a dead-end error.
+      const setupUrl = 'https://dashboard.stripe.com/connect/accounts/overview';
+      if (/sign(ed)? up for Connect|Connect.*not.*enabled|only create new accounts/i.test(msg)) {
+        throw new BadRequestException({
+          code: 'CONNECT_NOT_ENABLED',
+          setupUrl,
+          message:
+            "Stripe Connect isn't enabled on the platform's Stripe account yet. " +
+            'Enable it once (free, instant in test mode) at the Stripe dashboard, then try again. ' +
+            'If Stripe is unavailable in your country, use a bank/wallet method below instead.',
+        });
+      }
+      throw new BadRequestException({
+        code: 'CONNECT_ERROR',
+        setupUrl,
+        message: `Stripe Connect could not be started: ${msg}`,
+      });
     }
   }
 

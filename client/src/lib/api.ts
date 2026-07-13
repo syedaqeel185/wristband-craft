@@ -33,11 +33,14 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
       code?: string;
       status?: number;
       reason?: string;
+      setupUrl?: string;
     };
-    // Surface structured error fields (e.g. code: 'SUBSCRIPTION_INACTIVE') so the
-    // UI can react — show the right banner, etc.
+    // Surface structured error fields (e.g. code: 'SUBSCRIPTION_INACTIVE',
+    // 'CONNECT_NOT_ENABLED') so the UI can react — show the right banner, redirect
+    // the owner to enable Connect, etc.
     error.code = data?.code;
     error.reason = data?.reason;
+    error.setupUrl = data?.setupUrl;
     error.status = response.status;
     throw error;
   }
