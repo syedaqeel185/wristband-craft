@@ -1,11 +1,22 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch, getOrderTimeline, getOrderTracking, type OrderTimelineItem, type OrderTracking } from "@/lib/api";
+import {
+  apiFetch,
+  getOrderTimeline,
+  getOrderTracking,
+  getCanReview,
+  createSupplierReview,
+  type OrderTimelineItem,
+  type OrderTracking,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Stars } from "@/components/SupplierGrid";
 import { toast } from "sonner";
-import { ArrowLeft, Package } from "lucide-react";
+import { ArrowLeft, Package, Star, Loader2 } from "lucide-react";
 
 interface Order {
   id: string;
@@ -15,6 +26,8 @@ interface Order {
   status: string;
   printType?: string;
   createdAt: string;
+  supplierId?: string | null;
+  supplier?: { id: string; companyName: string } | null;
   design: {
     id: string;
     designUrl: string;
@@ -34,9 +47,55 @@ const MyOrders = () => {
   const [loadingTimelineId, setLoadingTimelineId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Review dialog state.
+  const [reviewOrder, setReviewOrder] = useState<Order | null>(null);
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState("");
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewedSupplierIds, setReviewedSupplierIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     fetchOrders();
   }, []);
+
+  const openReview = async (order: Order) => {
+    if (!order.supplierId) {
+      toast.error("This order isn't linked to a supplier to review.");
+      return;
+    }
+    setReviewOrder(order);
+    setRating(5);
+    setComment("");
+    setReviewLoading(true);
+    try {
+      // Pre-fill if the customer has already reviewed this supplier (edit mode).
+      const res = await getCanReview(order.supplierId);
+      if (res.existingReview) {
+        setRating(res.existingReview.rating);
+        setComment(res.existingReview.comment || "");
+      }
+    } catch {
+      // Non-fatal — start with a fresh 5-star review.
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  const submitReview = async () => {
+    if (!reviewOrder?.supplierId) return;
+    setSubmitting(true);
+    try {
+      await createSupplierReview(reviewOrder.supplierId, rating, comment.trim() || undefined);
+      setReviewedSupplierIds((prev) => new Set(prev).add(reviewOrder.supplierId as string));
+      toast.success("Thanks for your feedback!");
+      setReviewOrder(null);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to submit review");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const fetchOrders = async () => {
     try {
@@ -172,7 +231,17 @@ const MyOrders = () => {
                         </div>
                       )}
                       
-                      <div className="flex gap-2 pt-4 justify-end border-t mt-4">
+                      <div className="flex gap-2 pt-4 justify-end border-t mt-4 flex-wrap">
+                        {order.status.toUpperCase() === "DELIVERED" && order.supplierId && (
+                          <Button
+                            variant="default"
+                            size="sm"
+                            onClick={() => openReview(order)}
+                          >
+                            <Star className="h-4 w-4 mr-1.5" />
+                            {reviewedSupplierIds.has(order.supplierId) ? "Edit your review" : "Leave a review"}
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
@@ -293,6 +362,42 @@ const MyOrders = () => {
           </div>
         )}
       </main>
+
+      <Dialog open={!!reviewOrder} onOpenChange={(o) => !o && setReviewOrder(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              How was your order from {reviewOrder?.supplier?.companyName || "this supplier"}?
+            </DialogTitle>
+          </DialogHeader>
+          {reviewLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Your order was delivered — rate the delivery and quality to help other customers.
+              </p>
+              <Stars value={rating} size={32} onPick={setRating} />
+              <Textarea
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                rows={4}
+                placeholder="Tell others about the quality, delivery speed, communication… (optional)"
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => setReviewOrder(null)}>
+                  Cancel
+                </Button>
+                <Button onClick={submitReview} disabled={submitting}>
+                  {submitting ? "Submitting…" : "Submit review"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
