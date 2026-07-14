@@ -234,6 +234,51 @@ export function createCheckout(orderIds: string[]) {
   }) as Promise<CheckoutResponse>;
 }
 
+// ---------------------------------------------------------------------------
+// Checkout options: the customer picks a method per supplier, pays via Stripe
+// or submits a manual/offline payment (Payoneer, JazzCash, bank, …) + receipt.
+// ---------------------------------------------------------------------------
+
+export interface CheckoutMethod {
+  id: string;
+  provider: string;
+  label: string;
+  kind: 'stripe' | 'manual';
+  available: boolean;
+  instructions: Record<string, unknown>;
+}
+
+export interface CheckoutGroup {
+  supplierId: string;
+  supplierName: string;
+  orderIds: string[];
+  amount: number;
+  currency: string;
+  alreadyPaid: boolean;
+  receiptUrl: string | null;
+  methods: CheckoutMethod[];
+}
+
+export function getCheckoutOptions(orderIds: string[]) {
+  return apiFetch(`/payments/options?orderIds=${encodeURIComponent(orderIds.join(','))}`) as Promise<{
+    groups: CheckoutGroup[];
+  }>;
+}
+
+export function createStripeSessionForGroup(supplierId: string, orderIds: string[]) {
+  return apiFetch('/payments/stripe-session', {
+    method: 'POST',
+    body: JSON.stringify({ supplierId, orderIds }),
+  }) as Promise<{ url?: string; sessionId?: string }>;
+}
+
+export function submitPaymentReceipt(orderIds: string[], provider: string, receiptUrl?: string) {
+  return apiFetch('/payments/submit-receipt', {
+    method: 'POST',
+    body: JSON.stringify({ orderIds, provider, receiptUrl }),
+  }) as Promise<{ ok: boolean; orderIds: string[] }>;
+}
+
 /** Supplier/admin confirms an offline (manual/bank/wallet) payment was received. */
 export function markOrderPaid(orderId: string) {
   return apiFetch(`/payments/orders/${orderId}/mark-paid`, { method: 'POST' }) as Promise<{

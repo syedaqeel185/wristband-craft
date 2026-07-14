@@ -97,6 +97,33 @@ export class PaymentMethodsService {
     };
   }
 
+  /**
+   * All active methods a supplier offers, for the customer's checkout picker.
+   * Manual/offline methods include their (decrypted) instructions — these are
+   * the pay-to details meant to be shown to the paying customer. Stripe Connect
+   * carries no instructions (the customer is sent to Stripe's hosted checkout).
+   * Never exposes raw secrets for card providers.
+   */
+  async listActiveForCheckout(supplierId: string): Promise<
+    Array<{ id: string; provider: string; label: string | null; instructions: Record<string, unknown> }>
+  > {
+    const methods = await this.prisma.supplierPaymentMethod.findMany({
+      where: { supplierId, isActive: true },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+    });
+    return methods.map((m) => {
+      let instructions: Record<string, unknown> = {};
+      if (m.provider !== 'STRIPE_CONNECT' && m.configEncrypted) {
+        try {
+          instructions = decryptJson(m.configEncrypted);
+        } catch {
+          instructions = {};
+        }
+      }
+      return { id: m.id, provider: m.provider, label: m.label, instructions };
+    });
+  }
+
   async list(userId: string) {
     const supplier = await this.requireSupplier(userId);
     const methods = await this.prisma.supplierPaymentMethod.findMany({

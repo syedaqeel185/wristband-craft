@@ -696,3 +696,16 @@ Please update this file when for each module. You can ask me question if anythin
 - Map provider is **free OpenStreetMap/Leaflet** (chosen over Google Maps to avoid an API key + billing). Nominatim is fine for low checkout volume (debounced, attributed); for scale, self-host Nominatim or use a paid geocoder — the picker is provider-swappable.
 - "Sort by rates" interpreted as **price** (highest-rating already = "Top rated").
 - `react-leaflet` pinned to **v4** (v5 requires React 19; project is React 18).
+## 2026-07-14 — Module: Customer payment-method choice + receipt upload
+
+**What**
+- **Customer chooses the payment method per supplier** at checkout instead of being forced onto the supplier's default. New `GET /payments/options?orderIds=` (`PaymentsService.getCheckoutOptions`) returns one group per supplier with its amount + every active method (`PaymentMethodsService.listActiveForCheckout`): Stripe (card) or manual/wallet (Payoneer, JazzCash, EasyPaisa, PayPal, bank) with the decrypted pay-to instructions.
+- New **`/pay` page** (`client/src/pages/Payment.tsx`): per-supplier card with a method selector; Stripe → `POST /payments/stripe-session` (per-group session, extracted `buildStripeSession`) → hosted checkout; manual → shows the supplier's details (e.g. Payoneer email) + a **receipt upload** (reuses `uploadImage` → Blob) + "I've paid — submit". `Address.tsx` now hands off to `/pay` (was auto-routing to the default method).
+- **Receipt review**: `POST /payments/submit-receipt` records `paymentMethodProvider` + `paymentReceiptUrl` on the orders and sets them `awaiting_payment`; the supplier's order card (`AdminDashboard`) shows the method + receipt image (link fallback for PDFs) with a **Confirm payment received** button (`markManualPaid`).
+- Schema (migration `order_payment_receipt`, additive): `Order.paymentMethodProvider`, `paymentReceiptUrl`, `paymentReceiptUploadedAt`.
+
+**Why** — the customer previously saw only the supplier's default method (e.g. JazzCash) with no way to pick another or prove they'd paid; suppliers had no receipt to verify offline payments against.
+
+**Verified** (local E2E + browser): options returns all methods with instructions; checkout amount = €123 (product €100 + DHL €23, no double-count — `totalPrice` already folds in shipping); `/pay` shows Payoneer + JazzCash, switching updates the pay-to details, submit → 201 + "awaiting confirmation"; supplier card renders method + receipt image → "Confirm payment received" → order **ACCEPTED/paid**, paid revenue updated. Server build + client `tsc` clean. Migration applied to **production Neon**.
+
+**Notes** — Stripe path stays available per supplier (unchanged Connect requirement). Receipt upload uses the existing Blob endpoint (works in prod where `BLOB_READ_WRITE_TOKEN` is set).

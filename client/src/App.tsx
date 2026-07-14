@@ -17,6 +17,7 @@ import PaymentSuccess from "./pages/PaymentSuccess";
 import ConfirmOrder from "./pages/ConfirmOrder";
 import OrderSummary from "./pages/OrderSummary";
 import Address from "./pages/Address";
+import Payment from "./pages/Payment";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { ReviewPrompt } from "./components/ReviewPrompt";
 import NotFound from "./pages/NotFound";
@@ -95,6 +96,14 @@ const App = () => (
             element={
               <ProtectedRoute>
                 <Address />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/pay"
+            element={
+              <ProtectedRoute>
+                <Payment />
               </ProtectedRoute>
             }
           />

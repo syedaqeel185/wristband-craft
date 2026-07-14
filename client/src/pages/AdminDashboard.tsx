@@ -52,6 +52,8 @@ interface Order {
   trackingUrl?: string | null;
   courier?: string | null;
   estimatedDelivery?: string | null;
+  paymentMethodProvider?: string | null;
+  paymentReceiptUrl?: string | null;
   canManage?: boolean;
   user: { email: string; fullName?: string | null } | null;
   design: {
@@ -520,6 +522,43 @@ const OrderCard = ({
                 <p className="text-sm text-muted-foreground">Not provided yet (added at checkout).</p>
               )}
             </div>
+
+            {/* Customer payment / receipt (manual methods) */}
+            {(order.paymentReceiptUrl || (order.paymentMethodProvider && order.paymentMethodProvider !== "STRIPE_CONNECT" && order.paymentStatus === "awaiting_payment")) && (
+              <div className="border-t pt-3">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                  <Receipt className="h-3.5 w-3.5" /> Customer payment
+                </div>
+                <div className="text-sm space-y-2">
+                  {order.paymentMethodProvider && (
+                    <div>Method: <span className="font-medium">{order.paymentMethodProvider.replace(/_/g, " ")}</span></div>
+                  )}
+                  {order.paymentReceiptUrl ? (
+                    <a href={order.paymentReceiptUrl} target="_blank" rel="noreferrer" className="inline-block">
+                      <img
+                        src={order.paymentReceiptUrl}
+                        alt="Payment receipt"
+                        className="max-h-40 rounded border object-contain bg-white"
+                        onError={(e) => {
+                          // Non-image receipts (e.g. PDF) — show a link instead.
+                          (e.currentTarget as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                      <span className="text-primary underline text-xs">Open receipt</span>
+                    </a>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      Customer marked payment sent — no receipt uploaded. Verify before confirming.
+                    </p>
+                  )}
+                  {canManage && order.paymentStatus === "awaiting_payment" && (
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={markPaid}>
+                      Confirm payment received
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Tracking summary */}
             {(order.trackingNumber || order.courier) && (

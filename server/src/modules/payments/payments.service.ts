@@ -166,6 +166,209 @@ export class PaymentsService {
   }
 
   /**
+   * Present the customer every payment method each supplier in the order offers,
+   * so they can choose (card via Stripe, or a manual/wallet method like Payoneer,
+   * JazzCash, bank transfer) rather than being forced onto the supplier default.
+   * Returns one group per supplier with its selectable methods + amounts.
+   */
+  async getCheckoutOptions(userId: string, orderIds: string[]) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds }, userId },
+      include: { supplier: { select: { id: true, companyName: true } } },
+    });
+    if (orders.length === 0) throw new BadRequestException('No payable orders found');
+
+    const groups = new Map<string, typeof orders>();
+    for (const o of orders) {
+      if (!o.supplierId) continue;
+      if (!groups.has(o.supplierId)) groups.set(o.supplierId, [] as unknown as typeof orders);
+      groups.get(o.supplierId)!.push(o);
+    }
+
+    type CheckoutMethod = {
+      id: string;
+      provider: string;
+      label: string;
+      kind: 'stripe' | 'manual';
+      available: boolean;
+      instructions: Record<string, unknown>;
+    };
+    type CheckoutGroup = {
+      supplierId: string;
+      supplierName: string;
+      orderIds: string[];
+      amount: number;
+      currency: string;
+      alreadyPaid: boolean;
+      receiptUrl: string | null;
+      methods: CheckoutMethod[];
+    };
+    const result: CheckoutGroup[] = [];
+    for (const [supplierId, group] of groups) {
+      const currency = (group[0].currency || 'EUR').toUpperCase();
+      // totalPrice already includes each order's shipping/extra charges (folded
+      // in at order creation), so it's the full, authoritative amount to charge.
+      const amount = group.reduce((s, o) => s + Number(o.totalPrice), 0);
+      const alreadyPaid = group.every((o) => o.paymentStatus === PAID);
+      const receiptUrl = group.map((o) => o.paymentReceiptUrl).find(Boolean) || null;
+
+      const rawMethods = await this.paymentMethods.listActiveForCheckout(supplierId);
+      const methods: CheckoutMethod[] = [];
+      for (const m of rawMethods) {
+        if (m.provider === 'STRIPE_CONNECT') {
+          const accountId = await this.connect.chargeableAccountId(supplierId);
+          methods.push({
+            id: m.id,
+            provider: m.provider,
+            label: m.label || 'Card (Stripe)',
+            kind: 'stripe' as const,
+            available: !!accountId,
+            instructions: {},
+          });
+        } else {
+          methods.push({
+            id: m.id,
+            provider: m.provider,
+            label: m.label || m.provider,
+            kind: 'manual' as const,
+            available: true,
+            instructions: m.instructions,
+          });
+        }
+      }
+
+      result.push({
+        supplierId,
+        supplierName: group[0].supplier?.companyName ?? 'Supplier',
+        orderIds: group.map((o) => o.id),
+        amount: Math.round(amount * 100) / 100,
+        currency,
+        alreadyPaid,
+        receiptUrl,
+        methods,
+      });
+    }
+    return { groups: result };
+  }
+
+  /** Build a Stripe Checkout session for one supplier's order group. */
+  private async buildStripeSession(
+    userId: string,
+    supplierId: string,
+    group: Array<{ id: string; totalPrice: number; quantity: number; currency: string | null; extraCharges: string | null; design?: { wristbandType: string | null } | null }>,
+  ) {
+    const accountId = await this.connect.chargeableAccountId(supplierId);
+    if (!accountId) {
+      throw new BadRequestException('This supplier has not finished setting up Stripe payments.');
+    }
+    const currency = (group[0].currency || 'EUR').toLowerCase();
+    // totalPrice already includes shipping/extra charges (folded in at creation).
+    const amount = group.reduce((s, o) => s + Number(o.totalPrice), 0);
+    const groupOrderIds = group.map((o) => o.id);
+    const feeAmount = Math.round(amount * 100 * (this.platformFeePercent / 100));
+
+    const lineItems = group.map((o) => ({
+      quantity: 1,
+      price_data: {
+        currency,
+        unit_amount: Math.round(Number(o.totalPrice) * 100),
+        product_data: {
+          name: `Wristband order #${o.id.slice(0, 8)}`,
+          description: `${o.design?.wristbandType ?? 'wristband'} · ${o.quantity} pcs (incl. delivery)`,
+        },
+      },
+    }));
+
+    const session = await this.stripe.checkout.sessions.create({
+      mode: 'payment',
+      line_items: lineItems,
+      payment_intent_data: {
+        transfer_data: { destination: accountId },
+        ...(feeAmount > 0 ? { application_fee_amount: feeAmount } : {}),
+      },
+      success_url: `${this.clientUrl}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${this.clientUrl}/pay`,
+      client_reference_id: userId,
+      metadata: { orderIds: groupOrderIds.join(','), userId, supplierId },
+    });
+    await this.prisma.order.updateMany({
+      where: { id: { in: groupOrderIds } },
+      data: { stripeSessionId: session.id, paymentMethodProvider: 'STRIPE_CONNECT' },
+    });
+    return { url: session.url ?? undefined, sessionId: session.id };
+  }
+
+  /** Create a Stripe session for the customer's chosen supplier group. */
+  async createStripeSessionForGroup(userId: string, supplierId: string, orderIds: string[]) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds }, userId, supplierId },
+      include: { design: { select: { wristbandType: true } } },
+    });
+    if (orders.length === 0) throw new BadRequestException('No payable orders found for this supplier');
+    if (orders.some((o) => o.paymentStatus === PAID)) {
+      throw new BadRequestException('One or more of these orders are already paid');
+    }
+    return this.buildStripeSession(userId, supplierId, orders);
+  }
+
+  /**
+   * Customer submits an offline/manual payment for a supplier group: records the
+   * chosen method and the uploaded receipt, and marks the orders awaiting the
+   * supplier's confirmation. The supplier reviews the receipt, then marks paid.
+   */
+  async submitReceipt(
+    userId: string,
+    dto: { orderIds: string[]; provider: string; receiptUrl?: string },
+  ) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: dto.orderIds }, userId },
+      include: { supplier: { select: { contactEmail: true, companyName: true } }, user: { select: { fullName: true, email: true } } },
+    });
+    if (orders.length === 0) throw new BadRequestException('No matching orders found');
+    if (orders.some((o) => o.paymentStatus === PAID)) {
+      throw new BadRequestException('One or more of these orders are already paid');
+    }
+
+    await this.prisma.order.updateMany({
+      where: { id: { in: orders.map((o) => o.id) } },
+      data: {
+        paymentStatus: AWAITING,
+        paymentMethodProvider: dto.provider,
+        paymentReceiptUrl: dto.receiptUrl ?? undefined,
+        paymentReceiptUploadedAt: dto.receiptUrl ? new Date() : undefined,
+      },
+    });
+    for (const o of orders) {
+      await this.prisma.orderStatusHistory.create({
+        data: {
+          orderId: o.id,
+          fromStatus: o.status,
+          toStatus: o.status,
+          note: dto.receiptUrl
+            ? `Customer submitted a ${dto.provider} payment receipt — awaiting supplier confirmation`
+            : `Customer marked ${dto.provider} payment sent — awaiting supplier confirmation`,
+          updatedByUserId: userId,
+        },
+      });
+    }
+
+    // Notify the supplier that a payment/receipt is waiting for their review.
+    const supplier = orders[0].supplier;
+    if (supplier?.contactEmail) {
+      const total = orders.reduce((s, o) => s + Number(o.totalPrice), 0);
+      await this.email
+        .supplierNewOrder(
+          supplier.contactEmail,
+          supplier.companyName,
+          { id: orders[0].id, quantity: orders.reduce((s, o) => s + o.quantity, 0), totalPrice: total, currency: orders[0].currency },
+          orders[0].user?.fullName || orders[0].user?.email || null,
+        )
+        .catch(() => undefined);
+    }
+    return { ok: true, orderIds: orders.map((o) => o.id) };
+  }
+
+  /**
    * Reconcile a checkout session after the success redirect: if Stripe reports
    * the session paid, mark the orders paid and advance them to production.
    * Idempotent — safe to call more than once.

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { apiFetch, createCheckout, getCart, checkoutCart, type ShippingQuote } from "@/lib/api";
+import { apiFetch, getCart, checkoutCart, type ShippingQuote } from "@/lib/api";
 import { dhlShipping, dhlTierLabel } from "@/lib/shipping";
 import { LocationPicker } from "@/components/LocationPicker";
 import { Button } from "@/components/ui/button";
@@ -140,22 +140,10 @@ const Address = () => {
       }
 
       if (!orderIds.length) throw new Error("No orders to pay for");
-      const { routes, url } = await createCheckout(orderIds);
-
-      // Card payment (Stripe Connect) → hand off to the hosted checkout.
-      if (url) {
-        toast.success("Address saved. Redirecting to secure payment…");
-        window.location.href = url;
-        return;
-      }
-
-      // Otherwise every supplier is on a manual/offline method (or hasn't set
-      // one up). Show the payment instructions on the success page.
-      const unavailable = (routes || []).filter((r) => r.type === "unavailable");
-      if (unavailable.length && unavailable.length === (routes || []).length) {
-        throw new Error(unavailable[0].message || "This supplier hasn't set up payments yet.");
-      }
-      navigate("/payment-success", { state: { manualRoutes: routes } });
+      // Hand off to the payment page, where the customer picks a method per
+      // supplier (card via Stripe, or a manual/wallet method + receipt upload).
+      toast.success("Address saved. Choose how you'd like to pay.");
+      navigate("/pay", { state: { orderIds } });
     } catch (error: any) {
       toast.error(error.message || "An error occurred while processing your order");
       setLoading(false);
