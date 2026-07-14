@@ -33,7 +33,8 @@ const humanize = (k: string) =>
 // Where "Pay with …" opens when the supplier didn't provide their own payment
 // link. The customer signs in and completes the payment to the copied recipient.
 const WALLET_HOME: Record<string, string> = {
-  PAYONEER: "https://myaccount.payoneer.com/",
+  // Payoneer's "Pay → Make a payment to another Payoneer account" tab.
+  PAYONEER: "https://myaccount.payoneer.com/ma/pay/internalpayments",
   PAYPAL: "https://www.paypal.com/myaccount/transfer/homepage/pay",
 };
 
@@ -177,19 +178,26 @@ const SupplierPayCard = ({
   const providerLabel = selected ? selected.label || PROVIDER_LABEL[selected.provider] || selected.provider : "";
   const manual = selected && selected.kind === "manual" ? manualPayInfo(selected) : null;
 
-  // Open the supplier's payment link (recipient preset), or the wallet home with
-  // the supplier's email copied so the customer pastes it as the recipient.
-  const openWalletToPay = async () => {
+  // Open the supplier's payment link (recipient preset), or the wallet's pay tab
+  // with the supplier's email copied so the customer pastes it as the recipient.
+  // (Payoneer/PayPal are logged-in apps on their own domain — a cross-site link
+  // can't fill their fields, so we copy the email and show the exact amount.)
+  const openWalletToPay = () => {
     if (!manual?.payUrl) return;
+    // Open synchronously within the click gesture so the tab isn't popup-blocked.
+    window.open(manual.payUrl, "_blank", "noopener,noreferrer");
     if (!manual.hasLink && manual.recipientEmail) {
-      const ok = await copyToClipboard(manual.recipientEmail);
-      toast.success(
-        ok
-          ? `Recipient copied — paste "${manual.recipientEmail}" as the payee in ${providerLabel}.`
-          : `Send your payment to ${manual.recipientEmail} in ${providerLabel}.`,
+      const amt = money(group.amount, group.currency);
+      // Copy in the background — never block opening the pay tab.
+      void copyToClipboard(manual.recipientEmail).then((ok) =>
+        toast.success(
+          ok
+            ? `${providerLabel} opened. Recipient copied — paste "${manual.recipientEmail}" and enter ${amt}.`
+            : `In ${providerLabel}, pay ${amt} to ${manual.recipientEmail}.`,
+          { duration: 8000 },
+        ),
       );
     }
-    window.open(manual.payUrl, "_blank", "noopener,noreferrer");
   };
 
   const payWithStripe = async () => {
@@ -332,9 +340,10 @@ const SupplierPayCard = ({
                   )}
                   {manual && !manual.hasLink && manual.payUrl && manual.recipientEmail && (
                     <p className="text-xs text-muted-foreground">
-                      {providerLabel} opens in a new tab and we copy the supplier's email
-                      (<span className="font-medium">{manual.recipientEmail}</span>) — paste it as the recipient so
-                      you pay the right supplier.
+                      Opens {providerLabel}'s pay page and copies the supplier's email
+                      (<span className="font-medium">{manual.recipientEmail}</span>) — paste it as the recipient and
+                      enter <span className="font-medium">{money(group.amount, group.currency)}</span> so you pay the
+                      right supplier the right amount.
                     </p>
                   )}
                 </div>
