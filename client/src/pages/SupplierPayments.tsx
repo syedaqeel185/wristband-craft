@@ -59,7 +59,8 @@ const MANUAL_PROVIDERS: Record<string, { label: string; fields: { key: string; l
   PAYONEER: {
     label: "Payoneer",
     fields: [
-      { key: "payoneerEmail", label: "Payoneer email" },
+      { key: "payoneerEmail", label: "Payoneer email (recipient)" },
+      { key: "paymentLink", label: "Payoneer payment link (recommended — customers click to pay you)" },
       { key: "payeeId", label: "Payoneer customer ID (optional)" },
     ],
   },

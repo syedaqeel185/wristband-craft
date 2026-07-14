@@ -143,7 +143,7 @@ const Address = () => {
       // Hand off to the payment page, where the customer picks a method per
       // supplier (card via Stripe, or a manual/wallet method + receipt upload).
       toast.success("Address saved. Choose how you'd like to pay.");
-      navigate("/pay", { state: { orderIds } });
+      navigate(`/pay?orders=${encodeURIComponent(orderIds.join(","))}`, { state: { orderIds } });
     } catch (error: any) {
       toast.error(error.message || "An error occurred while processing your order");
       setLoading(false);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getCheckoutOptions,
   createStripeSessionForGroup,
@@ -12,13 +12,56 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ArrowLeft, CreditCard, Banknote, CheckCircle2, Loader2, Upload, FileCheck2 } from "lucide-react";
+import {
+  ArrowLeft,
+  CreditCard,
+  Banknote,
+  CheckCircle2,
+  Loader2,
+  Upload,
+  FileCheck2,
+  ExternalLink,
+  Copy,
+} from "lucide-react";
 
 const money = (amount: number, currency: string) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "EUR" }).format(amount);
 
 const humanize = (k: string) =>
   k.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+
+// Where "Pay with …" opens when the supplier didn't provide their own payment
+// link. The customer signs in and completes the payment to the copied recipient.
+const WALLET_HOME: Record<string, string> = {
+  PAYONEER: "https://myaccount.payoneer.com/",
+  PAYPAL: "https://www.paypal.com/myaccount/transfer/homepage/pay",
+};
+
+const isUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\//i.test(v.trim());
+const looksLikeEmail = (v: unknown): v is string => typeof v === "string" && /@/.test(v);
+
+const copyToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Split a manual method's instructions into a pay link, recipient email, and displayable detail rows. */
+function manualPayInfo(m: CheckoutMethod) {
+  const entries = Object.entries(m.instructions || {});
+  const linkEntry = entries.find(([, v]) => isUrl(v));
+  const details = entries.filter(([, v]) => !isUrl(v) && String(v ?? "").trim() !== "");
+  const recipientEmail =
+    (m.instructions?.payoneerEmail as string) ||
+    (m.instructions?.paypalEmail as string) ||
+    (m.instructions?.email as string) ||
+    ((entries.map(([, v]) => v).find(looksLikeEmail) as string) ?? "");
+  const payUrl = (linkEntry?.[1] as string) || WALLET_HOME[m.provider] || "";
+  return { details, recipientEmail, payUrl, hasLink: !!linkEntry };
+}
 
 const PROVIDER_LABEL: Record<string, string> = {
   STRIPE_CONNECT: "Card (Stripe)",
@@ -33,7 +76,12 @@ const PROVIDER_LABEL: Record<string, string> = {
 const Payment = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const orderIds = ((location.state as { orderIds?: string[] } | null)?.orderIds || []).filter(Boolean);
+  const [searchParams] = useSearchParams();
+  // Prefer router state; fall back to ?orders= so a refresh on /pay still works.
+  const orderIds = (
+    (location.state as { orderIds?: string[] } | null)?.orderIds ||
+    (searchParams.get("orders") || "").split(",")
+  ).filter(Boolean);
 
   const [groups, setGroups] = useState<CheckoutGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,6 +174,23 @@ const SupplierPayCard = ({
   const [busy, setBusy] = useState(false);
 
   const selected: CheckoutMethod | undefined = group.methods.find((m) => m.id === selectedId);
+  const providerLabel = selected ? selected.label || PROVIDER_LABEL[selected.provider] || selected.provider : "";
+  const manual = selected && selected.kind === "manual" ? manualPayInfo(selected) : null;
+
+  // Open the supplier's payment link (recipient preset), or the wallet home with
+  // the supplier's email copied so the customer pastes it as the recipient.
+  const openWalletToPay = async () => {
+    if (!manual?.payUrl) return;
+    if (!manual.hasLink && manual.recipientEmail) {
+      const ok = await copyToClipboard(manual.recipientEmail);
+      toast.success(
+        ok
+          ? `Recipient copied — paste "${manual.recipientEmail}" as the payee in ${providerLabel}.`
+          : `Send your payment to ${manual.recipientEmail} in ${providerLabel}.`,
+      );
+    }
+    window.open(manual.payUrl, "_blank", "noopener,noreferrer");
+  };
 
   const payWithStripe = async () => {
     setBusy(true);
@@ -227,22 +292,49 @@ const SupplierPayCard = ({
               </div>
             ) : selected ? (
               <div className="space-y-3">
-                <div className="rounded-lg border bg-muted/40 p-4">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
-                    Pay {money(group.amount, group.currency)} directly via {selected.label || PROVIDER_LABEL[selected.provider] || selected.provider}
+                <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Pay {money(group.amount, group.currency)} directly via {providerLabel}
                   </p>
-                  {Object.keys(selected.instructions || {}).length > 0 ? (
-                    <dl className="space-y-1 text-sm">
-                      {Object.entries(selected.instructions).map(([k, v]) => (
-                        <div key={k} className="flex justify-between gap-4">
+                  {manual && manual.details.length > 0 ? (
+                    <dl className="space-y-1.5 text-sm">
+                      {manual.details.map(([k, v]) => (
+                        <div key={k} className="flex justify-between items-center gap-3">
                           <dt className="text-muted-foreground">{humanize(k)}</dt>
-                          <dd className="font-medium text-right break-all">{String(v)}</dd>
+                          <dd className="font-medium text-right break-all flex items-center gap-1.5">
+                            <span>{String(v)}</span>
+                            <button
+                              type="button"
+                              title="Copy"
+                              className="text-muted-foreground hover:text-primary"
+                              onClick={async () => {
+                                const ok = await copyToClipboard(String(v));
+                                toast.success(ok ? "Copied" : String(v));
+                              }}
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                          </dd>
                         </div>
                       ))}
                     </dl>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Contact the supplier for payment details.
+                    <p className="text-sm text-muted-foreground">Contact the supplier for payment details.</p>
+                  )}
+
+                  {manual?.payUrl && (
+                    <Button type="button" className="w-full" variant="hero" onClick={openWalletToPay}>
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      {manual.hasLink
+                        ? `Pay ${money(group.amount, group.currency)} with ${providerLabel}`
+                        : `Open ${providerLabel} to pay`}
+                    </Button>
+                  )}
+                  {manual && !manual.hasLink && manual.payUrl && manual.recipientEmail && (
+                    <p className="text-xs text-muted-foreground">
+                      {providerLabel} opens in a new tab and we copy the supplier's email
+                      (<span className="font-medium">{manual.recipientEmail}</span>) — paste it as the recipient so
+                      you pay the right supplier.
                     </p>
                   )}
                 </div>
