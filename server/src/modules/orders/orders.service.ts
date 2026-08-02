@@ -124,12 +124,69 @@ export class OrdersService {
     }
   }
 
+  /**
+   * The buyer's contact details shown to the supplier fulfilling the order, so
+   * they can reach the customer directly. Phone/address come from the shipping
+   * details captured at checkout (Profile has no phone field of its own).
+   */
+  private buildBuyerContact(
+    user: { email: string | null; fullName: string | null } | null,
+    shipping: Record<string, any> | null,
+  ) {
+    return {
+      name: shipping?.name || shipping?.fullName || user?.fullName || null,
+      email: user?.email || shipping?.email || null,
+      phone: shipping?.phone || shipping?.contactPhone || null,
+      address: shipping?.address || shipping?.line1 || shipping?.street || null,
+      city: shipping?.city || null,
+      country: shipping?.country || null,
+    };
+  }
+
+  /** The supplier's contact details shown to the customer who ordered from them. */
+  private buildSupplierContact(
+    supplier:
+      | {
+          companyName: string;
+          contactEmail: string | null;
+          contactPhone: string | null;
+          website: string | null;
+          city: string | null;
+          country: string | null;
+        }
+      | null,
+  ) {
+    if (!supplier) return null;
+    return {
+      companyName: supplier.companyName,
+      email: supplier.contactEmail,
+      phone: supplier.contactPhone,
+      website: supplier.website,
+      city: supplier.city,
+      country: supplier.country,
+    };
+  }
+
   /** Map the studio's print type (+ saved meta) to the pricing engine's enum. */
   private mapPrintType(printType?: string, meta?: Record<string, any>): 'none' | 'black' | 'color' {
     const p = printType || meta?.printType;
     if (p === 'full_color' || p === 'color') return 'color';
     if (p === 'black') return 'black';
     return 'none';
+  }
+
+  /** Supplier-configured options selected by the customer, from the saved design meta. */
+  private selectedOptionsFrom(
+    meta: Record<string, any>,
+  ): { key: string; choiceKey?: string }[] | undefined {
+    const v = meta?.selectedOptions;
+    if (!Array.isArray(v)) return undefined;
+    return v
+      .filter((s) => s && typeof s.key === 'string')
+      .map((s) => ({
+        key: s.key,
+        choiceKey: typeof s.choiceKey === 'string' ? s.choiceKey : undefined,
+      }));
   }
 
   private validateTransition(fromStatus: string, toStatus: string) {
@@ -187,6 +244,7 @@ export class OrdersService {
         hasCustomDesign:
           meta.hasPrint === true || (!!createOrderDto.printType && createOrderDto.printType !== 'none'),
         hasLogo: meta.hasLogo === true,
+        selectedOptions: this.selectedOptionsFrom(meta),
       });
       totalPrice = quote.total;
       unitPrice = quote.unitPrice;
@@ -299,13 +357,19 @@ export class OrdersService {
           design: true,
         },
       });
-      return orders.map((order) => ({
-        ...order,
-        shippingAddress: order.shippingAddress ? JSON.parse(order.shippingAddress) : null,
-        extraCharges: order.extraCharges ? JSON.parse(order.extraCharges) : null,
-        canManage: true,
-        visibility: 'fulfillment' as const,
-      }));
+      return orders.map((order) => {
+        const shipping = order.shippingAddress ? JSON.parse(order.shippingAddress) : null;
+        return {
+          ...order,
+          shippingAddress: shipping,
+          extraCharges: order.extraCharges ? JSON.parse(order.extraCharges) : null,
+          // Contact both ways: the supplier can reach the buyer, and the buyer's
+          // view (below) can reach the supplier.
+          buyerContact: this.buildBuyerContact(order.user, shipping),
+          canManage: true,
+          visibility: 'fulfillment' as const,
+        };
+      });
     }
 
     return this.findByUser(user.id);
@@ -324,6 +388,8 @@ export class OrdersService {
       ...order,
       shippingAddress: order.shippingAddress ? JSON.parse(order.shippingAddress) : null,
       extraCharges: order.extraCharges ? JSON.parse(order.extraCharges) : null,
+      // So the customer can contact the supplier who is fulfilling their order.
+      supplierContact: this.buildSupplierContact(order.supplier),
     }));
   }
 
@@ -337,6 +403,7 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
+    let actingSupplier: { id: string; hasOwnProduction: boolean } | null = null;
     if (user.roles.includes('admin')) {
       // ok
     } else if (user.roles.includes('supplier')) {
@@ -344,12 +411,39 @@ export class OrdersService {
       if (!supplier || order.supplierId !== supplier.id) {
         throw new ForbiddenException('You can only update orders fulfilled by you');
       }
+      actingSupplier = supplier;
     } else if (order.userId !== user.id) {
       throw new ForbiddenException();
     }
 
     const nextStatus = this.normalizeStatus(updateOrderStatusDto.status);
     this.validateTransition(order.status, nextStatus);
+
+    // Production gate: a supplier without its own production must place a
+    // wholesale order for this customer order before production can start.
+    // (Suppliers with production are unaffected; drop-ship counts as fulfilment.)
+    if (
+      actingSupplier &&
+      !actingSupplier.hasOwnProduction &&
+      nextStatus === ORDER_STATUS.IN_PRODUCTION
+    ) {
+      const wholesaleOrder = await this.prisma.wholesaleOrder.findFirst({
+        where: {
+          sourceOrderId: order.id,
+          buyerSupplierId: actingSupplier.id,
+          status: { not: 'CANCELLED' },
+        },
+        select: { id: true },
+      });
+      if (!wholesaleOrder) {
+        throw new BadRequestException({
+          message:
+            'You have no in-house production, so this order must be produced by your wholesaler. Place a wholesale order for it first, then start production.',
+          code: 'WHOLESALE_ORDER_REQUIRED',
+          orderId: order.id,
+        });
+      }
+    }
 
     const updatedOrder = await this.prisma.order.update({
       where: { id },

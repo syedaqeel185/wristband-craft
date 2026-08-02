@@ -36,9 +36,14 @@ import {
   updateCoupon,
   getTaxRates,
   upsertTaxRate,
+  getAdminWholesalers,
+  promoteSupplierToEup,
+  setSupplierProduction,
+  assignSupplierToEup,
   clearToken,
   type AdminOverview,
   type AdminSupplier,
+  type AdminWholesaler,
   type Country,
   type AdminRevenue,
   type Coupon,
@@ -49,6 +54,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -77,6 +83,10 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
+// Sentinel for the assign-wholesaler Select: Radix Select forbids empty-string
+// item values, so we use this token to represent "use the house wholesaler" (null).
+const HOUSE_WHOLESALER = "__house__";
+
 const money = (n: number, c = "EUR") =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: c, maximumFractionDigits: 0 }).format(n);
 
@@ -92,6 +102,7 @@ const PlatformDashboard = () => {
   const navigate = useNavigate();
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [suppliers, setSuppliers] = useState<AdminSupplier[]>([]);
+  const [wholesalers, setWholesalers] = useState<AdminWholesaler[]>([]);
   const [countries, setCountries] = useState<Country[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -106,18 +117,20 @@ const PlatformDashboard = () => {
 
   const loadOverview = async () => {
     try {
-      const [ov, cs, rev, cp, tr] = await Promise.all([
+      const [ov, cs, rev, cp, tr, ws] = await Promise.all([
         getAdminOverview(),
         getCountries(),
         getAdminRevenue().catch(() => null),
         getCoupons().catch(() => []),
         getTaxRates().catch(() => []),
+        getAdminWholesalers().catch(() => []),
       ]);
       setOverview(ov);
       setCountries(cs);
       setRevenue(rev);
       setCoupons(cp);
       setTaxRates(tr);
+      setWholesalers(ws);
     } catch (e: any) {
       toast.error(e.message || "Failed to load dashboard");
     }
@@ -289,6 +302,70 @@ const PlatformDashboard = () => {
           </>
         )}
 
+        {/* Wholesalers */}
+        <Card>
+          <CardHeader>
+            <CardTitle>EUP accounts</CardTitle>
+            <CardDescription>
+              An EUP manufactures and sells to suppliers rather than to end customers. It sets its own fixed
+              price per 1000 pcs and freight for each supplier in the EUP console. Suppliers buy from the EU
+              house EUP unless you point them at another below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Company</TableHead>
+                    <TableHead>Country</TableHead>
+                    <TableHead className="text-right">Products</TableHead>
+                    <TableHead className="text-right">Assigned suppliers</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {wholesalers.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-muted-foreground py-10">
+                        No EUP accounts yet — promote a supplier below to make one.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    wholesalers.map((w) => (
+                      <TableRow key={w.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{w.companyName}</span>
+                            {w.isHouseWholesaler && <Badge variant="secondary">House</Badge>}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{w.contactEmail}</div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {w.country && (
+                              <img
+                                src={`https://flagcdn.com/20x15/${w.country.toLowerCase()}.png`}
+                                alt={w.country}
+                                width={18}
+                                height={13}
+                                className="rounded-[2px] shrink-0"
+                                onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
+                              />
+                            )}
+                            <span className="text-sm">{w.country ?? "—"}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">{w.productCount}</TableCell>
+                        <TableCell className="text-right">{w.assignedSupplierCount}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Supplier management */}
         <Card>
           <CardHeader>
@@ -340,6 +417,9 @@ const PlatformDashboard = () => {
                     <TableHead>Subscription</TableHead>
                     <TableHead className="text-right">Products</TableHead>
                     <TableHead className="text-right">Orders</TableHead>
+                    <TableHead>Is an EUP</TableHead>
+                    <TableHead>Has production</TableHead>
+                    <TableHead>Buys from</TableHead>
                     <TableHead>Account</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -347,7 +427,7 @@ const PlatformDashboard = () => {
                 <TableBody>
                   {suppliers.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
+                      <TableCell colSpan={10} className="text-center text-muted-foreground py-10">
                         No suppliers match your filters.
                       </TableCell>
                     </TableRow>
@@ -401,6 +481,61 @@ const PlatformDashboard = () => {
                         </TableCell>
                         <TableCell className="text-right">{s.productCount}</TableCell>
                         <TableCell className="text-right">{s.orderCount}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={s.isWholesaler}
+                              onCheckedChange={() =>
+                                act(
+                                  () => promoteSupplierToEup(s.id, !s.isWholesaler),
+                                  s.isWholesaler ? "No longer an EUP" : "Promoted to EUP",
+                                )
+                              }
+                            />
+                            {s.isHouseWholesaler && <Badge variant="secondary">House</Badge>}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            <Switch
+                              checked={s.hasOwnProduction}
+                              onCheckedChange={() =>
+                                act(() => setSupplierProduction(s.id, !s.hasOwnProduction), "Updated production")
+                              }
+                            />
+                            {!s.hasOwnProduction && (
+                              <span className="text-xs text-muted-foreground">must use wholesaler</span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {s.isWholesaler ? (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          ) : (
+                            <Select
+                              value={s.wholesalerId ?? HOUSE_WHOLESALER}
+                              onValueChange={(v) =>
+                                act(
+                                  () =>
+                                    assignSupplierToEup(s.id, v === HOUSE_WHOLESALER ? null : v),
+                                  "EUP assigned",
+                                )
+                              }
+                            >
+                              <SelectTrigger className="h-8 w-40 text-xs">
+                                <SelectValue placeholder="House wholesaler (default)" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value={HOUSE_WHOLESALER}>House wholesaler (default)</SelectItem>
+                                {wholesalers.map((w) => (
+                                  <SelectItem key={w.id} value={w.id}>
+                                    {w.companyName}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <Badge variant={s.status === "SUSPENDED" ? "destructive" : "secondary"}>
                             {s.status}

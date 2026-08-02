@@ -6,6 +6,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { CreateReviewDto, SupplierRegisterDto } from './suppliers.dto';
+import {
+  effectiveOptions,
+  LEGACY_OPTION_KEYS,
+  sanitizeOptionInput,
+} from '../pricing/product-options';
 
 /** Columns a supplier is allowed to set on a Product (prevents mass-assignment). */
 const PRODUCT_WRITABLE_FIELDS = [
@@ -47,6 +52,22 @@ const PRICING_TIER_WRITABLE_FIELDS = [
   'pricePerUnitGbp',
 ] as const;
 
+const PRICING_CONFIG_WRITABLE_FIELDS = [
+  'wristbandType',
+  'minQuantity',
+  'basePriceUsd',
+  'basePriceEur',
+  'basePriceGbp',
+  'blackPrintExtraUsd',
+  'blackPrintExtraEur',
+  'blackPrintExtraGbp',
+  'fullColorPrintExtraUsd',
+  'fullColorPrintExtraEur',
+  'fullColorPrintExtraGbp',
+  'secureGuestsExtraUsd',
+  'secureGuestsExtraEur',
+] as const;
+
 function pick<T extends Record<string, any>>(
   source: T,
   fields: readonly string[],
@@ -85,9 +106,54 @@ export class SuppliersService {
   }
 
   private sanitizeTiers(tiers: any[]): Record<string, any>[] {
-    return (Array.isArray(tiers) ? tiers : []).map((t) =>
-      pick(t, PRICING_TIER_WRITABLE_FIELDS),
-    );
+    return (Array.isArray(tiers) ? tiers : [])
+      .map((t) => pick(t, PRICING_TIER_WRITABLE_FIELDS))
+      .filter((t) => Number.isFinite(Number(t.minQuantity)));
+  }
+
+  /** Sanitize client-submitted options into product_options column values. */
+  private sanitizeOptions(options: any[]): NonNullable<ReturnType<typeof sanitizeOptionInput>>[] {
+    const usedKeys = new Set<string>();
+    return (Array.isArray(options) ? options : [])
+      .map((o, i) => sanitizeOptionInput(o, i, usedKeys))
+      .filter((o): o is NonNullable<typeof o> => o !== null)
+      .map((o, i) => ({ ...o, sortOrder: i }));
+  }
+
+  /**
+   * Mirror well-known option prices back into the legacy Product columns so
+   * anything still reading them (older clients, stored snapshots) sees the
+   * same prices as the options system. Options are the source of truth.
+   */
+  private legacyColumnMirror(
+    options: { key: string; priceUsd: number; priceEur: number | null; priceGbp: number | null; isActive: boolean }[],
+  ): Record<string, number | null> {
+    const byKey = new Map(options.filter((o) => o.isActive).map((o) => [o.key, o]));
+    const usd = (key: string) => byKey.get(key)?.priceUsd ?? 0;
+    return {
+      printExtraUsd: usd(LEGACY_OPTION_KEYS.blackPrint),
+      colorPrintExtraUsd: usd(LEGACY_OPTION_KEYS.fullColorPrint),
+      logoExtraUsd: usd(LEGACY_OPTION_KEYS.logo),
+      qrCodePriceUsd: usd(LEGACY_OPTION_KEYS.qrCode),
+      qrCodePriceEur: byKey.get(LEGACY_OPTION_KEYS.qrCode)?.priceEur ?? null,
+      qrCodePriceGbp: byKey.get(LEGACY_OPTION_KEYS.qrCode)?.priceGbp ?? null,
+      designSetupFeeUsd: usd(LEGACY_OPTION_KEYS.designSetup),
+      designSetupFeeEur: byKey.get(LEGACY_OPTION_KEYS.designSetup)?.priceEur ?? null,
+      designSetupFeeGbp: byKey.get(LEGACY_OPTION_KEYS.designSetup)?.priceGbp ?? null,
+      trademarkFeeUsd: usd(LEGACY_OPTION_KEYS.trademark),
+      trademarkFeeEur: byKey.get(LEGACY_OPTION_KEYS.trademark)?.priceEur ?? null,
+      trademarkFeeGbp: byKey.get(LEGACY_OPTION_KEYS.trademark)?.priceGbp ?? null,
+    };
+  }
+
+  /**
+   * Serialize a product for API responses: `options` always present (persisted
+   * rows or legacy-column synthesis) with choices parsed from JSON.
+   */
+  private withOptions<T extends { options?: any[] } & Parameters<typeof effectiveOptions>[0]>(
+    product: T,
+  ) {
+    return { ...product, options: effectiveOptions(product) };
   }
 
   async register(dto: SupplierRegisterDto) {
@@ -168,6 +234,9 @@ export class SuppliersService {
 
   async findAll() {
     return this.prisma.supplier.findMany({
+      // Wholesalers sell to suppliers, not customers — keep them out of the
+      // customer-facing supplier picker.
+      where: { isWholesaler: false },
       orderBy: { companyName: 'asc' },
       select: {
         id: true,
@@ -227,7 +296,7 @@ export class SuppliersService {
     sort?: string;
     near?: string;
   } = {}) {
-    const where: Prisma.SupplierWhereInput = { status: { not: 'SUSPENDED' } };
+    const where: Prisma.SupplierWhereInput = { status: { not: 'SUSPENDED' }, isWholesaler: false };
     if (filters.country) where.countryCode = filters.country.toUpperCase();
     if (typeof filters.minRating === 'number' && !Number.isNaN(filters.minRating)) {
       where.rating = { gte: filters.minRating };
@@ -334,25 +403,26 @@ export class SuppliersService {
         totalOrders: true,
         isVerified: true,
         status: true,
+        isWholesaler: true,
         createdAt: true,
       },
     });
-    if (!supplier || supplier.status === 'SUSPENDED') {
+    if (!supplier || supplier.status === 'SUSPENDED' || supplier.isWholesaler) {
       throw new BadRequestException('Supplier not found');
     }
 
     const [products, reviews, shipping] = await Promise.all([
       this.prisma.product.findMany({
         where: { supplierId, isActive: true },
-        include: { pricingTiers: { orderBy: { minQuantity: 'asc' } } },
-        orderBy: { name: 'asc' },
+        include: this.productInclude,
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       }),
       this.getReviews(supplierId),
       this.shipping.listForSupplier(supplierId),
     ]);
 
     const productsWithImages = products.map((p) => ({
-      ...p,
+      ...this.withOptions(p),
       images: this.parseImages(p.imageUrls),
     }));
 
@@ -485,70 +555,69 @@ export class SuppliersService {
     });
   }
 
+  /**
+   * Replace the supplier's pricing configs for the submitted wristband types.
+   *
+   * The previous implementation upserted keyed only on (supplierId,
+   * wristbandType) and ignored `minQuantity`, so multiple quantity tiers of
+   * the same type collapsed into one row — saved tiers "disappeared" after the
+   * next reload/login. This rewrite is a transactional replace: for every
+   * wristband type present in the payload, all existing rows are removed and
+   * the submitted rows (deduplicated by minQuantity) are recreated, so what
+   * the supplier saved is exactly what reloads.
+   */
   async updatePricing(userId: string, dto: any) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { userId },
     });
     if (!supplier) throw new BadRequestException('Not a supplier');
 
-    // If it's a single object, first check if a config for this wristband type already exists
-    if (!Array.isArray(dto)) {
-      const existingConfig = await this.prisma.pricingConfig.findFirst({
-        where: { supplierId: supplier.id, wristbandType: dto.wristbandType },
-      });
+    const submitted = (Array.isArray(dto) ? dto : [dto])
+      .map((c) => pick(c, PRICING_CONFIG_WRITABLE_FIELDS))
+      .filter((c) => typeof c.wristbandType === 'string' && c.wristbandType.trim());
 
-      if (existingConfig) {
-        await this.prisma.pricingConfig.update({
-          where: { id: existingConfig.id },
-          data: { ...dto, supplierId: supplier.id },
+    // Deduplicate by (wristbandType, minQuantity) — last entry wins.
+    const byKey = new Map<string, Record<string, any>>();
+    for (const c of submitted) {
+      byKey.set(`${c.wristbandType}::${Number(c.minQuantity) || 0}`, c);
+    }
+    const configs = [...byKey.values()];
+    const touchedTypes = [...new Set(configs.map((c) => c.wristbandType as string))];
+
+    if (touchedTypes.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.pricingConfig.deleteMany({
+          where: { supplierId: supplier.id, wristbandType: { in: touchedTypes } },
         });
-      } else {
-        await this.prisma.pricingConfig.create({
-          data: { ...dto, supplierId: supplier.id },
+        await tx.pricingConfig.createMany({
+          data: configs.map((c) => ({
+            ...c,
+            supplierId: supplier.id,
+          })) as Prisma.PricingConfigCreateManyInput[],
         });
-      }
-    } else {
-      // Handle array of configs
-      const configs = dto;
-      for (const config of configs) {
-        if (config.id) {
-          await this.prisma.pricingConfig.update({
-            where: { id: config.id },
-            data: { ...config, supplierId: supplier.id },
-          });
-        } else {
-          const existingConfig = await this.prisma.pricingConfig.findFirst({
-            where: {
-              supplierId: supplier.id,
-              wristbandType: config.wristbandType,
-            },
-          });
-          if (existingConfig) {
-            await this.prisma.pricingConfig.update({
-              where: { id: existingConfig.id },
-              data: { ...config, supplierId: supplier.id },
-            });
-          } else {
-            await this.prisma.pricingConfig.create({
-              data: { ...config, supplierId: supplier.id },
-            });
-          }
-        }
-      }
+      });
     }
 
     return this.prisma.pricingConfig.findMany({
       where: { supplierId: supplier.id },
-      orderBy: { wristbandType: 'asc' },
+      orderBy: [{ wristbandType: 'asc' }, { minQuantity: 'asc' }],
     });
   }
 
+  /** Standard include for product reads: tiers + options in display order. */
+  private readonly productInclude = {
+    pricingTiers: { orderBy: { minQuantity: 'asc' } },
+    options: { orderBy: { sortOrder: 'asc' } },
+  } satisfies Prisma.ProductInclude;
+
   async getProductsBySupplierId(supplierId: string) {
-    return this.prisma.product.findMany({
-      where: { supplierId, isActive: true },
-      include: { pricingTiers: true },
-      orderBy: { name: 'asc' },
+    const products = await this.prisma.product.findMany({
+      // Never expose a wholesaler's catalog through the public per-supplier route.
+      where: { supplierId, isActive: true, supplier: { isWholesaler: false } },
+      include: this.productInclude,
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
+    return products.map((p) => this.withOptions(p));
   }
 
   async getMyProducts(userId: string) {
@@ -556,11 +625,12 @@ export class SuppliersService {
       where: { userId },
     });
     if (!supplier) throw new BadRequestException('Not a supplier');
-    return this.prisma.product.findMany({
+    const products = await this.prisma.product.findMany({
       where: { supplierId: supplier.id },
-      include: { pricingTiers: true },
-      orderBy: { createdAt: 'desc' },
+      include: this.productInclude,
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
+    return products.map((p) => this.withOptions(p));
   }
 
   async createProduct(userId: string, dto: any) {
@@ -573,29 +643,48 @@ export class SuppliersService {
     // create new products. Existing products remain readable/editable.
     await this.subscriptions.assertActive(supplier.id);
 
-    const { pricingTiers } = dto;
     const productData = pick(dto, PRODUCT_WRITABLE_FIELDS);
-    const product = await this.prisma.product.create({
-      data: {
-        ...productData,
-        supplierId: supplier.id,
-      } as Prisma.ProductUncheckedCreateInput,
-    });
+    const tiers = this.sanitizeTiers(dto.pricingTiers);
+    // Options are only persisted when the client sends them; otherwise the
+    // legacy columns remain the source and are synthesized on read.
+    const options = Array.isArray(dto.options) ? this.sanitizeOptions(dto.options) : null;
 
-    const tiers = this.sanitizeTiers(pricingTiers);
-    if (tiers.length > 0) {
-      await this.prisma.supplierPricingTier.createMany({
-        data: tiers.map((t) => ({
-          ...t,
-          productId: product.id,
-        })) as Prisma.SupplierPricingTierCreateManyInput[],
+    const created = await this.prisma.$transaction(async (tx) => {
+      // New products go to the end of the supplier's list.
+      const last = await tx.product.findFirst({
+        where: { supplierId: supplier.id },
+        orderBy: { sortOrder: 'desc' },
+        select: { sortOrder: true },
       });
-    }
-
-    return this.prisma.product.findUnique({
-      where: { id: product.id },
-      include: { pricingTiers: true },
+      const product = await tx.product.create({
+        data: {
+          ...productData,
+          ...(options ? this.legacyColumnMirror(options) : {}),
+          sortOrder: (last?.sortOrder ?? -1) + 1,
+          supplierId: supplier.id,
+        } as Prisma.ProductUncheckedCreateInput,
+      });
+      if (tiers.length > 0) {
+        await tx.supplierPricingTier.createMany({
+          data: tiers.map((t) => ({
+            ...t,
+            productId: product.id,
+          })) as Prisma.SupplierPricingTierCreateManyInput[],
+        });
+      }
+      if (options && options.length > 0) {
+        await tx.productOption.createMany({
+          data: options.map((o) => ({ ...o, productId: product.id })),
+        });
+      }
+      return product;
     });
+
+    const full = await this.prisma.product.findUnique({
+      where: { id: created.id },
+      include: this.productInclude,
+    });
+    return full ? this.withOptions(full) : full;
   }
 
   async updateProduct(userId: string, productId: string, dto: any) {
@@ -609,32 +698,71 @@ export class SuppliersService {
     });
     if (!product) throw new BadRequestException('Product not found');
 
-    const { pricingTiers } = dto;
     const productData = pick(dto, PRODUCT_WRITABLE_FIELDS);
-    await this.prisma.product.update({
-      where: { id: productId },
-      data: productData,
+    const options = Array.isArray(dto.options) ? this.sanitizeOptions(dto.options) : null;
+
+    // One transaction for the product + tier + option rewrite, so a failure
+    // mid-way can never leave the product with its tiers or options dropped.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.product.update({
+        where: { id: productId },
+        data: { ...productData, ...(options ? this.legacyColumnMirror(options) : {}) },
+      });
+
+      if (Array.isArray(dto.pricingTiers)) {
+        const tiers = this.sanitizeTiers(dto.pricingTiers);
+        await tx.supplierPricingTier.deleteMany({ where: { productId } });
+        if (tiers.length > 0) {
+          await tx.supplierPricingTier.createMany({
+            data: tiers.map((t) => ({
+              ...t,
+              productId,
+            })) as Prisma.SupplierPricingTierCreateManyInput[],
+          });
+        }
+      }
+
+      if (options) {
+        await tx.productOption.deleteMany({ where: { productId } });
+        if (options.length > 0) {
+          await tx.productOption.createMany({
+            data: options.map((o) => ({ ...o, productId })),
+          });
+        }
+      }
     });
 
-    if (Array.isArray(pricingTiers)) {
-      const tiers = this.sanitizeTiers(pricingTiers);
-      await this.prisma.supplierPricingTier.deleteMany({
-        where: { productId },
-      });
-      if (tiers.length > 0) {
-        await this.prisma.supplierPricingTier.createMany({
-          data: tiers.map((t) => ({
-            ...t,
-            productId,
-          })) as Prisma.SupplierPricingTierCreateManyInput[],
-        });
-      }
+    const full = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: this.productInclude,
+    });
+    return full ? this.withOptions(full) : full;
+  }
+
+  /** Persist the supplier's chosen product ordering (array of product ids, first = top). */
+  async reorderProducts(userId: string, productIds: string[]) {
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { userId },
+    });
+    if (!supplier) throw new BadRequestException('Not a supplier');
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      throw new BadRequestException('productIds must be a non-empty array');
     }
 
-    return this.prisma.product.findUnique({
-      where: { id: productId },
-      include: { pricingTiers: true },
+    const owned = await this.prisma.product.findMany({
+      where: { supplierId: supplier.id, id: { in: productIds } },
+      select: { id: true },
     });
+    const ownedIds = new Set(owned.map((p) => p.id));
+
+    await this.prisma.$transaction(
+      productIds
+        .filter((id) => ownedIds.has(id))
+        .map((id, index) =>
+          this.prisma.product.update({ where: { id }, data: { sortOrder: index } }),
+        ),
+    );
+    return this.getMyProducts(userId);
   }
 
   async deleteProduct(userId: string, productId: string) {

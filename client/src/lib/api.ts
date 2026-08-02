@@ -111,6 +111,55 @@ export function getOrderTimeline(orderId: string) {
 export type Currency = 'USD' | 'EUR' | 'GBP';
 export type PrintType = 'none' | 'black' | 'color';
 
+/** A sub-choice within a product option (e.g. QR code → Static / Dynamic). */
+export interface OptionChoice {
+  key: string;
+  label: string;
+  description?: string | null;
+  /** When set, the selected choice's price replaces the option's base price. */
+  priceUsd?: number | null;
+  priceEur?: number | null;
+  priceGbp?: number | null;
+}
+
+/**
+ * A supplier-configured customization add-on. Fully dynamic — suppliers can
+ * rename, price, reorder, disable, and create unlimited options. The Design
+ * Studio and product pages render whatever is configured here.
+ */
+export interface ProductOption {
+  id?: string;
+  key: string;
+  label: string;
+  description?: string | null;
+  groupName?: string | null;
+  pricingMode: 'per_unit' | 'one_time';
+  priceUsd: number;
+  priceEur?: number | null;
+  priceGbp?: number | null;
+  isActive: boolean;
+  sortOrder: number;
+  /** How the Design Studio renders it: toggle | print | qr | trademark | design_setup. */
+  studioModule: string;
+  choices?: OptionChoice[];
+}
+
+/** A customization option (by key) the customer selected. */
+export interface SelectedOption {
+  key: string;
+  choiceKey?: string;
+}
+
+/** Starting option template for new products (supplier can change everything). */
+export function getOptionDefaults() {
+  return apiFetch('/products/option-defaults') as Promise<ProductOption[]>;
+}
+
+/** Distinct wristband types across active products (data-driven, not hardcoded). */
+export function getWristbandTypes() {
+  return apiFetch('/products/types') as Promise<string[]>;
+}
+
 export interface PricingTier {
   id: string;
   minQuantity: number;
@@ -136,6 +185,7 @@ export interface CatalogProduct {
   qrCodePriceUsd: number;
   trademarkFeeUsd: number;
   pricingTiers: PricingTier[];
+  options: ProductOption[];
   supplier?: {
     id: string;
     companyName: string;
@@ -173,6 +223,8 @@ export interface QuoteRequest {
   hasLogo?: boolean;
   qrEnabled?: boolean;
   trademarkEnabled?: boolean;
+  /** Supplier-configured options selected by the customer (preferred). */
+  selectedOptions?: SelectedOption[];
 }
 
 export interface PriceComponent {
@@ -506,6 +558,7 @@ export interface StorefrontProduct {
   colorPrintExtraUsd: number;
   logoExtraUsd: number;
   pricingTiers: PricingTier[];
+  options: ProductOption[];
 }
 
 export interface SupplierProfile {
@@ -742,6 +795,11 @@ export interface AdminSupplier {
   city?: string | null;
   status: string;
   isVerified: boolean;
+  isWholesaler: boolean;
+  isHouseWholesaler: boolean;
+  hasOwnProduction: boolean;
+  wholesalerId?: string | null;
+  assignedWholesaler?: { id: string; companyName: string } | null;
   rating: number;
   createdAt: string;
   productCount: number;
@@ -753,6 +811,17 @@ export interface AdminSupplier {
     currentPeriodEnd: string;
     cancelAtPeriodEnd: boolean;
   } | null;
+}
+
+export interface AdminWholesaler {
+  id: string;
+  companyName: string;
+  contactEmail: string;
+  country?: string | null;
+  status: string;
+  isHouseWholesaler: boolean;
+  productCount: number;
+  assignedSupplierCount: number;
 }
 
 export function getAdminOverview() {
@@ -782,6 +851,35 @@ export function setSupplierCountry(id: string, countryCode: string) {
   return apiFetch(`/admin/suppliers/${id}/country`, {
     method: "PATCH",
     body: JSON.stringify({ countryCode }),
+  });
+}
+
+// ---- Admin: wholesaler management ----
+
+export function getAdminWholesalers() {
+  return apiFetch("/admin/wholesalers") as Promise<AdminWholesaler[]>;
+}
+
+/** Turn a supplier INTO an EUP (grants the `eup` role). Inverse: pass false. */
+export function promoteSupplierToEup(id: string, isWholesaler: boolean, isHouseWholesaler?: boolean) {
+  return apiFetch(`/admin/suppliers/${id}/promote-eup`, {
+    method: "PATCH",
+    body: JSON.stringify({ isWholesaler, isHouseWholesaler }),
+  });
+}
+
+export function setSupplierProduction(id: string, hasOwnProduction: boolean) {
+  return apiFetch(`/admin/suppliers/${id}/production`, {
+    method: "PATCH",
+    body: JSON.stringify({ hasOwnProduction }),
+  });
+}
+
+/** Point a supplier AT the EUP it buys from. Null = the house EUP. */
+export function assignSupplierToEup(id: string, wholesalerId: string | null) {
+  return apiFetch(`/admin/suppliers/${id}/assign-eup`, {
+    method: "PATCH",
+    body: JSON.stringify({ wholesalerId }),
   });
 }
 
@@ -848,4 +946,404 @@ export function getTaxRates() {
 
 export function upsertTaxRate(input: { countryCode: string; name: string; ratePercent: number; isActive?: boolean }) {
   return apiFetch("/admin/tax-rates", { method: "POST", body: JSON.stringify(input) }) as Promise<TaxRate>;
+}
+
+// ---------------------------------------------------------------------------
+// Wholesaler layer: a supplier orders stock from its assigned wholesaler; a
+// wholesaler manages its discounts, offers and inbound orders.
+// ---------------------------------------------------------------------------
+
+export type FulfilmentMode = 'SHIP_TO_SUPPLIER' | 'DROP_SHIP';
+
+export interface WholesalerCard {
+  id: string;
+  companyName: string;
+  logoUrl?: string | null;
+  description?: string | null;
+  contactEmail: string;
+  contactPhone?: string | null;
+  website?: string | null;
+  city?: string | null;
+  country?: string | null;
+  countryCode?: string | null;
+  isHouseWholesaler: boolean;
+}
+
+export interface WholesalerOffer {
+  id: string;
+  wholesalerId?: string;
+  title: string;
+  description?: string | null;
+  discountPercent?: number | null;
+  code?: string | null;
+  minQuantity?: number | null;
+  validFrom?: string | null;
+  validUntil?: string | null;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+export interface MyWholesaler {
+  wholesaler: WholesalerCard | null;
+  /** Promotional banners only — offers do not change what a supplier pays. */
+  offers: WholesalerOffer[];
+  hasOwnProduction: boolean;
+  isWholesaler: boolean;
+  mustUseWholesaler: boolean;
+  /** Days from payment to promised delivery. */
+  productionSlaDays: number;
+}
+
+export interface WholesaleCatalogProduct {
+  id: string;
+  name: string;
+  description?: string | null;
+  wristbandType: string;
+  minOrderQuantity: number;
+  maxOrderQuantity?: number | null;
+  availableSizes: any[];
+  availableColors: any[];
+  imageUrls: string[];
+  options: ProductOption[];
+  /** False when EUP has not set a price for this supplier + product yet. */
+  orderable: boolean;
+  priceSource: 'supplier' | 'default' | null;
+  pricePer1000Eur?: number | null;
+  pricePer1000Usd?: number | null;
+  pricePer1000Gbp?: number | null;
+}
+
+export interface WholesaleCatalog {
+  wholesaler: WholesalerCard | null;
+  products: WholesaleCatalogProduct[];
+}
+
+export interface EupQuoteLine {
+  code: string;
+  label: string;
+  kind: 'per_1000' | 'per_unit' | 'flat';
+  rate: number;
+  amount: number;
+}
+
+/** What a supplier pays EUP: fixed price per 1000 pcs, plus freight on top. */
+export interface WholesaleQuote {
+  currency: Currency;
+  quantity: number;
+  pricePer1000: number;
+  priceSource: 'supplier' | 'default';
+  goodsTotal: number;
+  freightTotal: number;
+  freightRateId: string | null;
+  freightLabel: string | null;
+  estMinDays: number | null;
+  estMaxDays: number | null;
+  total: number;
+  /** Total cost normalised per 1000 pcs, including freight. */
+  effectivePer1000: number;
+  lines: EupQuoteLine[];
+}
+
+export interface WholesaleOrder {
+  id: string;
+  quantity: number;
+  currency: string;
+  listUnitPrice?: number | null;
+  unitPrice?: number | null;
+  discountPercent: number;
+  totalPrice: number;
+  /** The fixed EUP price per 1000 pcs in force when the order was placed. */
+  eupPricePer1000?: number | null;
+  goodsTotal?: number | null;
+  freightTotal?: number | null;
+  /** SLA clock: production starts on payment, delivery promised 7 days later. */
+  paidAt?: string | null;
+  productionStartedAt?: string | null;
+  promisedDeliveryAt?: string | null;
+  status: string;
+  paymentStatus?: string | null;
+  paymentMethodProvider?: string | null;
+  paymentReceiptUrl?: string | null;
+  fulfilmentMode: FulfilmentMode;
+  sourceOrderId?: string | null;
+  customerInfo?: Record<string, any> | null;
+  shippingAddress?: Record<string, any> | null;
+  selectedOptions?: SelectedOption[] | null;
+  trackingNumber?: string | null;
+  trackingUrl?: string | null;
+  courier?: string | null;
+  notes?: string | null;
+  createdAt: string;
+  product?: { id: string; name: string; wristbandType: string } | null;
+  /** What the end customer paid on the linked order, for margin display. */
+  customerPaid?: number | null;
+  customerCurrency?: string | null;
+  wholesaler?: { id: string; companyName: string; contactEmail?: string; contactPhone?: string | null };
+  buyer?: { id: string; companyName: string; contactEmail?: string; contactPhone?: string | null; city?: string | null; country?: string | null };
+}
+
+export interface PlaceWholesaleOrderInput {
+  productId: string;
+  quantity: number;
+  currency?: Currency;
+  selectedOptions?: SelectedOption[];
+  fulfilmentMode?: FulfilmentMode;
+  sourceOrderId?: string;
+  customerInfo?: Record<string, any>;
+  /** The buyer supplier's own delivery address (ship-to-supplier). */
+  shippingAddress?: Record<string, any>;
+  notes?: string;
+}
+
+/** Payment options a wholesaler offers for a wholesale order (buyer's view). */
+export interface WholesalePaymentOptions {
+  orderId: string;
+  wholesalerName: string;
+  amount: number;
+  currency: string;
+  alreadyPaid: boolean;
+  receiptUrl: string | null;
+  methods: CheckoutMethod[];
+}
+
+export interface WholesalerDiscount {
+  id: string;
+  wholesalerId: string;
+  supplierId?: string | null;
+  percent: number;
+  note?: string | null;
+  isActive: boolean;
+  supplier?: { id: string; companyName: string } | null;
+}
+
+// Buyer side
+export function getMyWholesaler() {
+  return apiFetch("/wholesale/me/wholesaler") as Promise<MyWholesaler>;
+}
+
+export function getWholesaleCatalog() {
+  return apiFetch("/wholesale/me/catalog") as Promise<WholesaleCatalog>;
+}
+
+export function getWholesaleQuote(input: PlaceWholesaleOrderInput) {
+  return apiFetch("/wholesale/me/quote", { method: "POST", body: JSON.stringify(input) }) as Promise<WholesaleQuote>;
+}
+
+export function placeWholesaleOrder(input: PlaceWholesaleOrderInput) {
+  return apiFetch("/wholesale/me/orders", { method: "POST", body: JSON.stringify(input) }) as Promise<WholesaleOrder>;
+}
+
+export function getMyWholesaleOrders() {
+  return apiFetch("/wholesale/me/orders") as Promise<WholesaleOrder[]>;
+}
+
+export function setMyProduction(hasOwnProduction: boolean) {
+  return apiFetch("/wholesale/me/production", {
+    method: "PATCH",
+    body: JSON.stringify({ hasOwnProduction }),
+  }) as Promise<{ id: string; hasOwnProduction: boolean }>;
+}
+
+// Buyer: pay the wholesaler for a wholesale order
+export function getWholesalePaymentOptions(orderId: string) {
+  return apiFetch(`/wholesale/orders/${orderId}/payment-options`) as Promise<WholesalePaymentOptions>;
+}
+
+export function wholesalePayStripe(orderId: string) {
+  return apiFetch(`/wholesale/orders/${orderId}/pay/stripe`, { method: "POST" }) as Promise<{
+    url?: string;
+    sessionId?: string;
+  }>;
+}
+
+export function wholesaleSubmitReceipt(orderId: string, provider: string, receiptUrl?: string) {
+  return apiFetch(`/wholesale/orders/${orderId}/pay/receipt`, {
+    method: "POST",
+    body: JSON.stringify({ provider, receiptUrl }),
+  }) as Promise<{ ok: boolean; orderId: string }>;
+}
+
+export function confirmWholesaleStripe(sessionId: string) {
+  return apiFetch("/wholesale/payments/confirm", {
+    method: "POST",
+    body: JSON.stringify({ sessionId }),
+  }) as Promise<{ paid: boolean; orderId: string | null }>;
+}
+
+/** Wholesaler confirms an offline payment was received. */
+export function wholesalerMarkOrderPaid(orderId: string) {
+  return apiFetch(`/wholesale/orders/${orderId}/mark-paid`, { method: "POST" }) as Promise<{
+    paid?: boolean;
+    alreadyPaid?: boolean;
+    orderId: string;
+  }>;
+}
+
+// Wholesaler side
+export function getWholesaleInbound() {
+  return apiFetch("/wholesale/me/inbound") as Promise<WholesaleOrder[]>;
+}
+
+export function updateWholesaleOrderStatus(
+  id: string,
+  input: { status: string; trackingNumber?: string; trackingUrl?: string; courier?: string; note?: string },
+) {
+  return apiFetch(`/wholesale/orders/${id}/status`, { method: "PATCH", body: JSON.stringify(input) }) as Promise<WholesaleOrder>;
+}
+
+export function getWholesaleDiscounts() {
+  return apiFetch("/wholesale/me/discounts") as Promise<WholesalerDiscount[]>;
+}
+
+export function upsertWholesaleDiscount(input: { supplierId?: string | null; percent: number; note?: string; isActive?: boolean }) {
+  return apiFetch("/wholesale/me/discounts", { method: "POST", body: JSON.stringify(input) }) as Promise<WholesalerDiscount>;
+}
+
+export function deleteWholesaleDiscount(id: string) {
+  return apiFetch(`/wholesale/me/discounts/${id}`, { method: "DELETE" }) as Promise<{ success: boolean }>;
+}
+
+export function getWholesaleOffers() {
+  return apiFetch("/wholesale/me/offers") as Promise<WholesalerOffer[]>;
+}
+
+export function createWholesaleOffer(input: Partial<WholesalerOffer>) {
+  return apiFetch("/wholesale/me/offers", { method: "POST", body: JSON.stringify(input) }) as Promise<WholesalerOffer>;
+}
+
+export function updateWholesaleOffer(id: string, input: Partial<WholesalerOffer>) {
+  return apiFetch(`/wholesale/me/offers/${id}`, { method: "PATCH", body: JSON.stringify(input) }) as Promise<WholesalerOffer>;
+}
+
+export function deleteWholesaleOffer(id: string) {
+  return apiFetch(`/wholesale/me/offers/${id}`, { method: "DELETE" }) as Promise<{ success: boolean }>;
+}
+
+// ---------------------------------------------------------------------------
+// EUP console: the suppliers EUP sells to, the fixed prices it charges them
+// per 1000 pcs, and the freight it bills on top. All EUP-managed — there are
+// no price constants anywhere in the codebase.
+// ---------------------------------------------------------------------------
+
+export interface EupBuyer {
+  id: string;
+  companyName: string;
+  contactEmail: string;
+  country?: string | null;
+  countryCode?: string | null;
+  status: string;
+  hasOwnProduction: boolean;
+}
+
+export interface EupPrice {
+  id: string;
+  wholesalerId: string;
+  productId: string;
+  /** null = EUP's default price for this product, for every supplier. */
+  supplierId?: string | null;
+  pricePer1000Eur: number;
+  pricePer1000Usd?: number | null;
+  pricePer1000Gbp?: number | null;
+  note?: string | null;
+  isActive: boolean;
+  validFrom?: string | null;
+  validUntil?: string | null;
+  product?: { id: string; name: string; wristbandType: string } | null;
+  supplier?: { id: string; companyName: string } | null;
+}
+
+export type FreightMode = 'SHIP_TO_SUPPLIER' | 'DROP_SHIP' | 'ANY';
+
+export interface EupFreightRate {
+  id: string;
+  wholesalerId: string;
+  supplierId?: string | null;
+  countryCode?: string | null;
+  fulfilmentMode: FreightMode;
+  label?: string | null;
+  pricePer1000Eur: number;
+  pricePer1000Usd?: number | null;
+  pricePer1000Gbp?: number | null;
+  minChargeEur?: number | null;
+  minChargeUsd?: number | null;
+  minChargeGbp?: number | null;
+  freeOverQty?: number | null;
+  estMinDays?: number | null;
+  estMaxDays?: number | null;
+  isActive: boolean;
+  sortOrder: number;
+  supplier?: { id: string; companyName: string } | null;
+}
+
+/** The signed-in account's own catalogue (EUP's products, for pricing them). */
+export interface MyProduct {
+  id: string;
+  name: string;
+  wristbandType: string;
+  minOrderQuantity: number;
+  maxOrderQuantity?: number | null;
+  isActive: boolean;
+  sortOrder?: number;
+}
+
+export function getMyProducts() {
+  return apiFetch("/suppliers/me/products") as Promise<MyProduct[]>;
+}
+
+export function getEupBuyers() {
+  return apiFetch("/wholesale/me/buyers") as Promise<EupBuyer[]>;
+}
+
+export function getEupPrices() {
+  return apiFetch("/wholesale/me/prices") as Promise<EupPrice[]>;
+}
+
+export function upsertEupPrice(input: {
+  productId: string;
+  supplierId?: string | null;
+  pricePer1000Eur: number;
+  pricePer1000Usd?: number | null;
+  pricePer1000Gbp?: number | null;
+  note?: string;
+  validFrom?: string;
+  validUntil?: string;
+  isActive?: boolean;
+}) {
+  return apiFetch("/wholesale/me/prices", { method: "POST", body: JSON.stringify(input) }) as Promise<EupPrice>;
+}
+
+export function deleteEupPrice(id: string) {
+  return apiFetch(`/wholesale/me/prices/${id}`, { method: "DELETE" }) as Promise<{ success: boolean }>;
+}
+
+export function getEupFreight() {
+  return apiFetch("/wholesale/me/freight") as Promise<EupFreightRate[]>;
+}
+
+export function createEupFreight(input: Partial<EupFreightRate> & { pricePer1000Eur: number }) {
+  return apiFetch("/wholesale/me/freight", { method: "POST", body: JSON.stringify(input) }) as Promise<EupFreightRate>;
+}
+
+export function updateEupFreight(id: string, input: Partial<EupFreightRate> & { pricePer1000Eur: number }) {
+  return apiFetch(`/wholesale/me/freight/${id}`, { method: "PATCH", body: JSON.stringify(input) }) as Promise<EupFreightRate>;
+}
+
+export function deleteEupFreight(id: string) {
+  return apiFetch(`/wholesale/me/freight/${id}`, { method: "DELETE" }) as Promise<{ success: boolean }>;
+}
+
+/** Current supplier account (includes wholesaler/production flags). */
+export interface MeSupplier {
+  id: string;
+  companyName: string;
+  contactEmail: string;
+  contactPhone?: string | null;
+  isWholesaler: boolean;
+  isHouseWholesaler: boolean;
+  hasOwnProduction: boolean;
+  wholesalerId?: string | null;
+}
+
+export function getMeSupplier() {
+  return apiFetch("/suppliers/me") as Promise<MeSupplier & Record<string, any>>;
 }

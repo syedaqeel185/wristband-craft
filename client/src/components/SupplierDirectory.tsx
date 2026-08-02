@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getSupplierDirectory,
   getCountries,
+  getWristbandTypes,
   type DirectorySupplier,
   type Country,
   type DirectoryFilters,
@@ -20,7 +21,8 @@ import {
 } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 
-const CATEGORIES = ["silicone", "fabric", "tyvek", "vinyl", "event"];
+// Fallback until the live list of product types loads (kept for first paint).
+const CATEGORY_FALLBACK = ["silicone", "fabric", "tyvek", "vinyl"];
 const SORTS: { value: NonNullable<DirectoryFilters["sort"]>; label: string }[] = [
   { value: "rating", label: "Top rated" },
   { value: "rating_asc", label: "Lowest rated" },
@@ -49,11 +51,19 @@ export const SupplierDirectory = () => {
   const [sort, setSort] = useState<NonNullable<DirectoryFilters["sort"]>>("rating");
   const [query, setQuery] = useState("");
 
+  // Categories reflect what suppliers actually sell (distinct product types).
+  const [categories, setCategories] = useState<string[]>(CATEGORY_FALLBACK);
+
   // Bootstrap: countries + the customer's country (default to local-first).
   useEffect(() => {
     (async () => {
-      const [cs, user] = await Promise.all([getCountries().catch(() => []), getCurrentUser().catch(() => null)]);
+      const [cs, user, types] = await Promise.all([
+        getCountries().catch(() => []),
+        getCurrentUser().catch(() => null),
+        getWristbandTypes().catch(() => []),
+      ]);
       setCountries(cs);
+      if (types.length > 0) setCategories(types);
       if (user?.countryCode) {
         setMyCountry(user.countryCode);
         setCountrySel("local");
@@ -117,7 +127,7 @@ export const SupplierDirectory = () => {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All categories</SelectItem>
-              {CATEGORIES.map((c) => (
+              {categories.map((c) => (
                 <SelectItem key={c} value={c} className="capitalize">
                   {c}
                 </SelectItem>

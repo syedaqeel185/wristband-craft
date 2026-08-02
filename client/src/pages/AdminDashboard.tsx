@@ -56,6 +56,14 @@ interface Order {
   paymentReceiptUrl?: string | null;
   canManage?: boolean;
   user: { email: string; fullName?: string | null } | null;
+  buyerContact?: {
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    city?: string | null;
+    country?: string | null;
+  } | null;
   design: {
     id?: string;
     designUrl: string;
@@ -213,6 +221,9 @@ const AdminDashboard = () => {
               <Button variant="outline" size="sm" onClick={() => navigate("/supplier/pricing")}>
                 Pricing
               </Button>
+              <Button variant="outline" size="sm" onClick={() => navigate("/supplier/wholesaler")}>
+                Wholesaler
+              </Button>
               <Button variant="outline" size="sm" onClick={() => navigate("/supplier/shipping")}>
                 Delivery
               </Button>
@@ -353,6 +364,7 @@ const OrderCard = ({
   isAdmin: boolean;
   onChanged: () => void;
 }) => {
+  const navigate = useNavigate();
   const status = norm(order.status);
   const canManage = isAdmin || order.canManage === true;
   const [busy, setBusy] = useState(false);
@@ -376,7 +388,19 @@ const OrderCard = ({
       toast.success(`Order ${next.toLowerCase().replace("_", " ")}`);
       onChanged();
     } catch (e: any) {
-      toast.error(e.message || "Failed to update status");
+      // Suppliers without their own production must order from their wholesaler
+      // before starting production — offer a one-click path to do that.
+      if (e?.code === "WHOLESALE_ORDER_REQUIRED") {
+        toast.error(e.message || "Order from your wholesaler first", {
+          action: {
+            label: "Order from wholesaler",
+            onClick: () => navigate(`/supplier/wholesaler?sourceOrderId=${order.id}`),
+          },
+          duration: 10000,
+        });
+      } else {
+        toast.error(e.message || "Failed to update status");
+      }
     } finally {
       setBusy(false);
     }
@@ -434,8 +458,30 @@ const OrderCard = ({
               <Badge variant="outline">{order.paymentStatus || "unpaid"}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
-              {order.user?.fullName || order.user?.email || "Customer"}
+              {order.buyerContact?.name || order.user?.fullName || order.user?.email || "Customer"}
             </p>
+            {/* Buyer contact — so the supplier can reach the customer directly. */}
+            {(order.buyerContact?.email || order.buyerContact?.phone || order.buyerContact?.address) && (
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                {order.buyerContact?.email && (
+                  <a href={`mailto:${order.buyerContact.email}`} className="hover:text-primary">
+                    {order.buyerContact.email}
+                  </a>
+                )}
+                {order.buyerContact?.phone && (
+                  <a href={`tel:${order.buyerContact.phone}`} className="hover:text-primary">
+                    {order.buyerContact.phone}
+                  </a>
+                )}
+                {(order.buyerContact?.address || order.buyerContact?.city) && (
+                  <span>
+                    {[order.buyerContact?.address, order.buyerContact?.city, order.buyerContact?.country]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           {canManage && (order.paymentStatus === "awaiting_payment" || actions.length > 0) && (
             <div className="flex gap-2 flex-wrap">

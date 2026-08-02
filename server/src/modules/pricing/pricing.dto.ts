@@ -1,10 +1,13 @@
+import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export const SUPPORTED_CURRENCIES = ['USD', 'EUR', 'GBP'] as const;
@@ -13,10 +16,23 @@ export type Currency = (typeof SUPPORTED_CURRENCIES)[number];
 export const PRINT_TYPES = ['none', 'black', 'color'] as const;
 export type PrintType = (typeof PRINT_TYPES)[number];
 
+/** One customization option the customer selected, by its supplier-defined key. */
+export class SelectedOptionDto {
+  @IsString()
+  key!: string;
+
+  /** Sub-choice within the option (e.g. qr_code → dynamic_qr). */
+  @IsOptional()
+  @IsString()
+  choiceKey?: string;
+}
+
 /**
- * Input to the dynamic pricing engine. Mirrors the customization options a
- * customer can toggle in the design studio. New options can be added here and
- * handled in {@link PricingService} without touching existing components.
+ * Input to the dynamic pricing engine. `selectedOptions` references the
+ * supplier-configured option keys on the product and is the preferred way to
+ * request add-ons; the boolean flags below are kept for backward compatibility
+ * and are mapped onto the equivalent option keys when `selectedOptions` is
+ * not provided.
  */
 export class QuoteRequestDto {
   @IsString()
@@ -53,4 +69,11 @@ export class QuoteRequestDto {
   @IsOptional()
   @IsBoolean()
   trademarkEnabled?: boolean;
+
+  /** Supplier-configured options selected by the customer (preferred). */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SelectedOptionDto)
+  selectedOptions?: SelectedOptionDto[];
 }

@@ -17,6 +17,7 @@ import { SubscriptionsModule } from './modules/subscriptions/subscriptions.modul
 import { AdminModule } from './modules/admin/admin.module';
 import { CountriesModule } from './modules/countries/countries.module';
 import { PaymentMethodsModule } from './modules/payment-methods/payment-methods.module';
+import { WholesaleModule } from './modules/wholesale/wholesale.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { PaymentMethodsModule } from './modules/payment-methods/payment-methods.
     AdminModule,
     CountriesModule,
     PaymentMethodsModule,
+    WholesaleModule,
   ],
   controllers: [AppController],
   providers: [AppService],

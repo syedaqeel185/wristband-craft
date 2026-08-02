@@ -108,6 +108,28 @@ export class SetSupplierCountryDto {
   countryCode: string;
 }
 
+export class SetWholesalerDto {
+  @IsBoolean()
+  isWholesaler: boolean;
+
+  /** Designate this wholesaler as the platform's house (default) wholesaler. */
+  @IsOptional()
+  @IsBoolean()
+  isHouseWholesaler?: boolean;
+}
+
+export class SetProductionDto {
+  @IsBoolean()
+  hasOwnProduction: boolean;
+}
+
+export class AssignWholesalerDto {
+  /** The wholesaler supplier id to assign, or null to fall back to the house wholesaler. */
+  @IsOptional()
+  @IsString()
+  wholesalerId?: string | null;
+}
+
 export class UpsertTaxRateDto {
   @IsString()
   @MinLength(2)

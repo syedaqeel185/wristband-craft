@@ -53,6 +53,24 @@ export class CartService {
     return 'none';
   }
 
+  /**
+   * Supplier-configured options the customer selected, as stored in the item's
+   * design meta. When present the pricing engine uses these directly; the
+   * legacy boolean flags below remain only for items saved by older clients.
+   */
+  private selectedOptionsFrom(
+    opts: Record<string, any>,
+  ): { key: string; choiceKey?: string }[] | undefined {
+    const v = opts?.selectedOptions;
+    if (!Array.isArray(v)) return undefined;
+    return v
+      .filter((s) => s && typeof s.key === 'string')
+      .map((s) => ({
+        key: s.key,
+        choiceKey: typeof s.choiceKey === 'string' ? s.choiceKey : undefined,
+      }));
+  }
+
   /** Live, server-computed view of the cart (prices recomputed from PricingService). */
   async getCart(userId: string) {
     const cart = await this.getOrCreateCart(userId);
@@ -78,6 +96,7 @@ export class CartService {
               trademarkEnabled: options.hasTrademark === true,
               hasCustomDesign: options.hasPrint === true,
               hasLogo: options.hasLogo === true,
+              selectedOptions: this.selectedOptionsFrom(options),
             });
             unitPrice = quote.unitPrice;
             lineTotal = quote.total;
@@ -129,6 +148,7 @@ export class CartService {
         trademarkEnabled: opts.hasTrademark === true,
         hasCustomDesign: opts.hasPrint === true,
         hasLogo: opts.hasLogo === true,
+        selectedOptions: this.selectedOptionsFrom(opts),
       });
       return quote.total;
     } catch {

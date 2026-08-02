@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Stars } from "@/components/SupplierGrid";
 import { toast } from "sonner";
-import { ArrowLeft, Package, Star, Loader2 } from "lucide-react";
+import { ArrowLeft, Package, Star, Loader2, Mail, Phone, Globe, MapPin } from "lucide-react";
 
 interface Order {
   id: string;
@@ -28,6 +28,14 @@ interface Order {
   createdAt: string;
   supplierId?: string | null;
   supplier?: { id: string; companyName: string } | null;
+  supplierContact?: {
+    companyName: string;
+    email: string | null;
+    phone: string | null;
+    website: string | null;
+    city: string | null;
+    country: string | null;
+  } | null;
   design: {
     id: string;
     designUrl: string;
@@ -230,7 +238,54 @@ const MyOrders = () => {
                           <span className="font-semibold">{order.design.customText}</span>
                         </div>
                       )}
-                      
+
+                      {order.supplierContact && (
+                        <div className="mt-3 rounded border p-3 text-sm bg-muted/40 space-y-1.5">
+                          <div className="font-semibold text-foreground">
+                            Supplier: {order.supplierContact.companyName}
+                          </div>
+                          {order.supplierContact.email && (
+                            <a
+                              href={`mailto:${order.supplierContact.email}`}
+                              className="flex items-center gap-2 text-muted-foreground hover:text-primary"
+                            >
+                              <Mail className="h-3.5 w-3.5 shrink-0" />
+                              <span className="break-all">{order.supplierContact.email}</span>
+                            </a>
+                          )}
+                          {order.supplierContact.phone && (
+                            <a
+                              href={`tel:${order.supplierContact.phone}`}
+                              className="flex items-center gap-2 text-muted-foreground hover:text-primary"
+                            >
+                              <Phone className="h-3.5 w-3.5 shrink-0" />
+                              <span>{order.supplierContact.phone}</span>
+                            </a>
+                          )}
+                          {order.supplierContact.website && (
+                            <a
+                              href={order.supplierContact.website}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 text-muted-foreground hover:text-primary"
+                            >
+                              <Globe className="h-3.5 w-3.5 shrink-0" />
+                              <span className="break-all">{order.supplierContact.website}</span>
+                            </a>
+                          )}
+                          {(order.supplierContact.city || order.supplierContact.country) && (
+                            <div className="flex items-center gap-2 text-muted-foreground">
+                              <MapPin className="h-3.5 w-3.5 shrink-0" />
+                              <span>
+                                {[order.supplierContact.city, order.supplierContact.country]
+                                  .filter(Boolean)
+                                  .join(", ")}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <div className="flex gap-2 pt-4 justify-end border-t mt-4 flex-wrap">
                         {order.status.toUpperCase() === "DELIVERED" && order.supplierId && (
                           <Button

@@ -1,6 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { apiFetch, getQuote, addToCart, getCart, type PriceQuote, type PrintType as QuotePrintType } from "@/lib/api";
+import {
+  apiFetch,
+  getQuote,
+  addToCart,
+  getCart,
+  type PriceQuote,
+  type ProductOption,
+  type SelectedOption,
+} from "@/lib/api";
 import { getCurrentUser } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +22,11 @@ import { ArrowLeft, ShoppingCart, Loader2, Save, Download, Printer, Trash2, Plus
 import { Canvas as FabricCanvas, Image as FabricImage, IText, Line, Rect } from "fabric";
 import QRPlaceholderImg from "@/assets/QR2.png";
 import QRCheckedImg from "@/assets/QR.jpg";
+import { TYVEK_COLORS, type WristbandColor } from "@/lib/tyvek";
 
 type Currency = "EUR" | "USD" | "GBP";
-type WristbandType = "silicone" | "fabric" | "vinyl" | "tyvek";
+// Wristband types are supplier-defined (free strings) — never a fixed list.
+type WristbandType = string;
 type PrintType = "none" | "black" | "full_color";
 
 // Real wristband proportions: 255mm x 25mm (~10.2 : 1). Rendered 1:1 (no scaling
@@ -25,11 +35,12 @@ const BAND_W = 1200;
 const BAND_H = Math.round((BAND_W * 25) / 255); // 118
 const DIECUT_PAD = 8; // px padding for the top/bottom die-cut lines
 
-const CANVAS_DIMS: Record<WristbandType, { width: number; height: number }> = {
-  tyvek: { width: BAND_W, height: BAND_H },
-  vinyl: { width: BAND_W, height: BAND_H },
-  fabric: { width: BAND_W, height: BAND_H },
-  silicone: { width: BAND_W, height: BAND_H },
+const DEFAULT_CANVAS_DIM = { width: BAND_W, height: BAND_H };
+const CANVAS_DIMS: Record<string, { width: number; height: number }> = {
+  tyvek: DEFAULT_CANVAS_DIM,
+  vinyl: DEFAULT_CANVAS_DIM,
+  fabric: DEFAULT_CANVAS_DIM,
+  silicone: DEFAULT_CANVAS_DIM,
 };
 
 // Left -> right: [QR] [5px] [vertical trademark] [print area].
@@ -44,27 +55,6 @@ function bandLayout(w: number, h: number) {
   const designRight = w - 10;
   return { qrSize, qrLeft, qrRight, tmW, tmX, designLeft, designRight };
 }
-
-const TYVEK_COLORS = [
-  { name: "White", value: "#FFFFFF" },
-  { name: "Black", value: "#000000" },
-  { name: "Silver", value: "#C0C0C0" },
-  { name: "Yellow", value: "#FFFF00" },
-  { name: "Neon Yellow", value: "#DFFF00" },
-  { name: "Gold", value: "#FFD700" },
-  { name: "Red", value: "#FF0000" },
-  { name: "Neon Red", value: "#FF073A" },
-  { name: "Orange", value: "#FF8C00" },
-  { name: "Neon Green", value: "#39FF14" },
-  { name: "Green", value: "#00FF00" },
-  { name: "Sky Blue", value: "#87CEEB" },
-  { name: "Blue", value: "#0000FF" },
-  { name: "Aqua", value: "#00FFFF" },
-  { name: "Purple", value: "#800080" },
-  { name: "Pink", value: "#FF69B4" },
-  { name: "Magenta", value: "#FF00FF" },
-  { name: "Violet", value: "#8B00FF" },
-];
 
 interface SavedTemplate {
   id: string;
@@ -94,6 +84,8 @@ interface DesignMetaSnapshot {
   tmItalic?: boolean;
   supplierId: string;
   productId: string;
+  /** Supplier-configured options the customer selected (pricing source of truth). */
+  selectedOptions?: SelectedOption[];
   pricing: { unitPrice: number; total: number };
 }
 
@@ -201,6 +193,106 @@ const DesignStudio = () => {
   const selectedProduct = supplierProducts.find((p) => p.id === selectedProductId);
   const minQty: number = selectedProduct?.minOrderQuantity || 1;
   const maxQty: number | undefined = selectedProduct?.maxOrderQuantity || undefined;
+
+  // Parse a supplier-configured list that may arrive as a JSON string OR an
+  // already-parsed array. Returns [] on anything unparseable.
+  const parseListField = (raw: unknown): any[] => {
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === "string" && raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  // Effective wristband colours: the selected product's own `availableColors`
+  // when it holds a non-empty list of { name, value } entries, otherwise the
+  // official 18 Tyvek colours. Only entries with a string `value` are kept.
+  const effectiveColors: WristbandColor[] = (() => {
+    const fromProduct = parseListField(selectedProduct?.availableColors)
+      .filter((c): c is { name?: string; value: string } => !!c && typeof c.value === "string")
+      .map((c) => ({ name: typeof c.name === "string" ? c.name : c.value, value: c.value }));
+    return fromProduct.length > 0 ? fromProduct : TYVEK_COLORS;
+  })();
+
+  // ---- Supplier-configured customization options (fully dynamic) ----
+  // Whatever the supplier configured on the product appears here — including
+  // custom options (RFID stickers, holograms, …) — with no code changes.
+  const productOptions: ProductOption[] = (selectedProduct?.options || []).filter(
+    (o: ProductOption) => o.isActive,
+  );
+  /** Selection state per option key: on/off + chosen sub-choice. */
+  const [optSel, setOptSel] = useState<Record<string, { enabled: boolean; choiceKey?: string }>>({});
+
+  /** Wristband types this supplier actually sells — customers never see others. */
+  const availableTypes: string[] = [...new Set(supplierProducts.map((p: any) => p.wristbandType))];
+
+  /** Resolve an option/choice price in the studio currency (EUR falls back to USD). */
+  const optionPrice = (opt: ProductOption, choiceKey?: string): number => {
+    const choice = choiceKey ? opt.choices?.find((c) => c.key === choiceKey) : undefined;
+    if (choice && choice.priceUsd != null) return choice.priceEur ?? choice.priceUsd ?? 0;
+    return opt.priceEur ?? opt.priceUsd ?? 0;
+  };
+
+  const isCustomized =
+    productOptions.some((o) => o.studioModule === "print" && optSel[o.key]?.enabled) || !!uploadedImage;
+
+  /** The selections sent to the pricing engine (single source of truth). */
+  const selectedOptions: SelectedOption[] = (() => {
+    const arr: SelectedOption[] = productOptions
+      .filter((o) => o.studioModule !== "design_setup" && optSel[o.key]?.enabled)
+      .map((o) => ({ key: o.key, choiceKey: optSel[o.key]?.choiceKey }));
+    // Design-setup fees apply automatically whenever the design is customized.
+    if (isCustomized) {
+      for (const o of productOptions.filter((x) => x.studioModule === "design_setup")) {
+        arr.push({ key: o.key });
+      }
+    }
+    return arr;
+  })();
+  const selectedOptionsKey = JSON.stringify(selectedOptions);
+
+  const toggleOption = (opt: ProductOption, enabled: boolean) => {
+    setOptSel((prev) => {
+      const next = { ...prev, [opt.key]: { ...prev[opt.key], enabled } };
+      // Black print and full-colour print are alternatives, not add-ons on top
+      // of each other — enabling one switches the other off.
+      if (enabled && opt.studioModule === "print") {
+        const rival =
+          opt.key === "black_print" ? "full_color_print" : opt.key === "full_color_print" ? "black_print" : null;
+        if (rival && next[rival]?.enabled) next[rival] = { ...next[rival], enabled: false };
+      }
+      // Default to the first choice when switching on an option with choices.
+      if (enabled && opt.choices?.length && !next[opt.key].choiceKey) {
+        next[opt.key] = { ...next[opt.key], choiceKey: opt.choices[0].key };
+      }
+      return next;
+    });
+  };
+
+  // Keep the canvas-facing flags (QR art, trademark strip, print uploads) in
+  // sync with whatever the supplier-defined options say.
+  useEffect(() => {
+    if (isRestoringRef.current) return;
+    const enabled = (module: string) =>
+      productOptions.some((o) => o.studioModule === module && optSel[o.key]?.enabled);
+    const printOn = enabled("print");
+    setHasPrint(printOn);
+    setPrintType(
+      !printOn
+        ? "none"
+        : optSel["black_print"]?.enabled && !optSel["full_color_print"]?.enabled
+          ? "black"
+          : "full_color",
+    );
+    setHasQrCode(enabled("qr"));
+    setHasTrademark(enabled("trademark"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOptionsKey, selectedProductId]);
 
   const designClip = useCallback((canvas: FabricCanvas) => {
     const L = bandLayout(canvas.getWidth(), canvas.getHeight());
@@ -410,6 +502,13 @@ const DesignStudio = () => {
     })();
   }, [selectedSupplierId]);
 
+  // Changing product resets the option selection (each product has its own
+  // supplier-configured option set). Skipped while restoring a saved design.
+  useEffect(() => {
+    if (isRestoringRef.current) return;
+    setOptSel({});
+  }, [selectedProductId]);
+
   const loadTemplates = async () => {
     try {
       const user = await getCurrentUser();
@@ -431,17 +530,13 @@ const DesignStudio = () => {
     const id = setTimeout(async () => {
       setLoadingPrice(true);
       try {
-        const printForQuote: QuotePrintType =
-          !hasPrint || printType === "none" ? "none" : printType === "black" ? "black" : "color";
+        // The supplier-configured selections are the single pricing input; the
+        // server resolves each key against the product's option list.
         const q = await getQuote({
           productId: selectedProductId,
           quantity: Math.max(quantity, minQty),
           currency,
-          printType: printForQuote,
-          hasCustomDesign: hasPrint || !!uploadedImage,
-          hasLogo: !!uploadedImage,
-          qrEnabled: hasQrCode,
-          trademarkEnabled: hasTrademark,
+          selectedOptions,
         });
         if (!cancelled) setQuote(q);
       } catch (error: any) {
@@ -457,7 +552,8 @@ const DesignStudio = () => {
       cancelled = true;
       clearTimeout(id);
     };
-  }, [selectedProductId, quantity, minQty, hasPrint, printType, hasQrCode, hasTrademark, uploadedImage, currency]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProductId, quantity, minQty, selectedOptionsKey, currency]);
 
   // ---- Image / text tools ----
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -497,6 +593,9 @@ const DesignStudio = () => {
       setUploadedImage(img);
       fabricCanvas.setActiveObject(img);
       fabricCanvas.renderAll();
+      // Logo printing is a priced add-on — switch it on so the charge is visible.
+      const logoOpt = productOptions.find((o) => o.key === "logo_print");
+      if (logoOpt && !optSel[logoOpt.key]?.enabled) toggleOption(logoOpt, true);
       toast.success("Logo added — drag to position, or use 'Duplicate Logo' to add more");
     } catch (err: any) {
       toast.error(err.message || "Failed to upload logo");
@@ -615,7 +714,7 @@ const DesignStudio = () => {
   // Serialize only user content (logos/text); structure is rebuilt from state.
   const serializeUserCanvas = (): string => {
     if (!fabricCanvas) return "";
-    const json: any = fabricCanvas.toJSON(["selectable", "evented", "zone"] as any);
+    const json: any = (fabricCanvas.toJSON as any)(["selectable", "evented", "zone"]);
     json.objects = (json.objects || []).filter((o: any) => !o.zone);
     return JSON.stringify(json);
   };
@@ -636,6 +735,7 @@ const DesignStudio = () => {
     tmItalic,
     supplierId: selectedSupplierId,
     productId: selectedProductId,
+    selectedOptions,
     pricing: { unitPrice: quote?.unitPrice ?? 0, total: quote?.total ?? 0 },
   });
 
@@ -659,6 +759,23 @@ const DesignStudio = () => {
         if (typeof meta.tmItalic === "boolean") setTmItalic(meta.tmItalic);
         if (meta.supplierId) setSelectedSupplierId(meta.supplierId);
         if (meta.productId) setSelectedProductId(meta.productId);
+
+        // Restore option selections: prefer the saved key-based selections;
+        // fall back to mapping the legacy flags onto the default option keys.
+        if (Array.isArray(meta.selectedOptions)) {
+          const sel: Record<string, { enabled: boolean; choiceKey?: string }> = {};
+          for (const s of meta.selectedOptions) {
+            if (s && typeof s.key === "string") sel[s.key] = { enabled: true, choiceKey: s.choiceKey };
+          }
+          setOptSel(sel);
+        } else {
+          const sel: Record<string, { enabled: boolean; choiceKey?: string }> = {};
+          if (meta.printType === "black") sel["black_print"] = { enabled: true };
+          else if (meta.hasPrint) sel["full_color_print"] = { enabled: true };
+          if (meta.hasQrCode) sel["qr_code"] = { enabled: true };
+          if (meta.hasTrademark) sel["trademark"] = { enabled: true };
+          setOptSel(sel);
+        }
 
         const dims = CANVAS_DIMS[(meta.wristbandType as WristbandType) || wristbandType] || CANVAS_DIMS.tyvek;
         fabricCanvas.setDimensions({ width: dims.width, height: dims.height });
@@ -738,6 +855,7 @@ const DesignStudio = () => {
       trademarkTextColor: meta.trademarkTextColor ?? meta.trademark_text_color,
       supplierId: meta.supplierId,
       productId: meta.productId,
+      selectedOptions: meta.selectedOptions,
     };
     void restoreDesign(normalised, editDesignState.canvasJson);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -869,13 +987,13 @@ const DesignStudio = () => {
     fabricCanvas.backgroundImage = undefined;
     setUploadedImage(null);
     setWristbandColor("#FFFFFF");
-    setWristbandType("tyvek");
     setPrintType("none");
     setHasPrint(false);
     setHasTrademark(false);
     setTrademarkText("");
     setTrademarkTextColor("black");
     setHasQrCode(false);
+    setOptSel({});
     void rebuildStructure(fabricCanvas);
     toast.success("Canvas cleared");
   };
@@ -1129,26 +1247,43 @@ const DesignStudio = () => {
                 <p className="text-xs text-muted-foreground mt-1">Opens a new tab to design another wristband.</p>
               </div>
 
-              <div>
-                <Label>Wristband Type</Label>
-                <Select value={wristbandType} onValueChange={(v: WristbandType) => setWristbandType(v)}>
-                  <SelectTrigger className="mt-2">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="silicone">Silicone</SelectItem>
-                    <SelectItem value="fabric">Fabric</SelectItem>
-                    <SelectItem value="vinyl">Vinyl</SelectItem>
-                    <SelectItem value="tyvek">Tyvek</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              {availableTypes.length > 0 && (
+                <div>
+                  <Label>Wristband Type</Label>
+                  <Select
+                    value={availableTypes.includes(wristbandType) ? wristbandType : undefined}
+                    onValueChange={(v: string) => {
+                      setWristbandType(v);
+                      // Jump to this supplier's first product of the chosen type.
+                      const p = supplierProducts.find((x: any) => x.wristbandType === v);
+                      if (p && p.id !== selectedProductId) {
+                        setSelectedProductId(p.id);
+                        setQuantity(p.minOrderQuantity || 1000);
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="mt-2">
+                      <SelectValue placeholder="Choose a type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableTypes.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t.charAt(0).toUpperCase() + t.slice(1)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Only the types this supplier offers are shown.
+                  </p>
+                </div>
+              )}
 
               {wristbandType === "tyvek" ? (
                 <div>
                   <Label>Tyvek Color</Label>
                   <div className="grid grid-cols-9 gap-2 mt-2">
-                    {TYVEK_COLORS.map((color) => (
+                    {effectiveColors.map((color) => (
                       <button
                         key={color.value}
                         className={`w-10 h-10 rounded-full border-2 transition-all ${
@@ -1181,118 +1316,172 @@ const DesignStudio = () => {
                 </div>
               )}
 
-              <div className="space-y-3">
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="print"
-                    checked={hasPrint}
-                    onCheckedChange={(c) => {
-                      const checked = !!c;
-                      setHasPrint(checked);
-                      setPrintType(checked ? "full_color" : "none");
-                    }}
-                  />
-                  <Label htmlFor="print" className="cursor-pointer">
-                    Add Print
-                  </Label>
-                </div>
+              {/* ---- Customization options — rendered from the supplier's product
+                   configuration. Any option the supplier creates (RFID stickers,
+                   holograms, …) appears here automatically. ---- */}
+              {productOptions.length > 0 && (
+                <div className="space-y-4">
+                  <Label>Customization Options</Label>
+                  {(() => {
+                    // Preserve supplier ordering; group consecutive options by group name.
+                    const groups: { name: string | null; opts: ProductOption[] }[] = [];
+                    for (const opt of productOptions) {
+                      const g = opt.groupName || null;
+                      const last = groups[groups.length - 1];
+                      if (last && last.name === g) last.opts.push(opt);
+                      else groups.push({ name: g, opts: [opt] });
+                    }
+                    return groups.map((group, gi) => (
+                      <div key={`${group.name ?? "other"}-${gi}`} className="space-y-3">
+                        {group.name && (
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {group.name}
+                          </p>
+                        )}
+                        {group.opts.map((opt) => {
+                          const sel = optSel[opt.key];
+                          const price = optionPrice(opt, sel?.choiceKey);
+                          const priceHint =
+                            price > 0
+                              ? ` +${sym}${opt.pricingMode === "one_time" ? price.toFixed(2) : price.toFixed(3)}${opt.pricingMode === "one_time" ? " one-time" : "/unit"}`
+                              : "";
 
-                <div className="flex items-center space-x-2">
-                  <Checkbox id="qr-code" checked={hasQrCode} onCheckedChange={(c) => setHasQrCode(c as boolean)} />
-                  <Label htmlFor="qr-code" className="cursor-pointer">
-                    Add QR Code (emergency / secure)
-                    {selectedProduct?.qrCodePriceUsd > 0 && (
-                      <span className="text-muted-foreground ml-1 text-xs">
-                        +{sym}
-                        {(selectedProduct.qrCodePriceEur ?? selectedProduct.qrCodePriceUsd).toFixed(3)}/unit
-                      </span>
-                    )}
-                  </Label>
-                </div>
+                          // Design-setup fees are applied automatically — show as info, not a toggle.
+                          if (opt.studioModule === "design_setup") {
+                            if (price <= 0) return null;
+                            return (
+                              <p key={opt.key} className="text-xs text-muted-foreground ml-6">
+                                {opt.label}: {sym}
+                                {price.toFixed(2)} one-time — applied automatically when you customise the design
+                                {isCustomized ? " (applied)" : ""}
+                              </p>
+                            );
+                          }
 
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="trademark"
-                      checked={hasTrademark}
-                      onCheckedChange={(c) => setHasTrademark(c as boolean)}
-                    />
-                    <Label htmlFor="trademark" className="cursor-pointer">
-                      Add Trademark (vertical, right of QR)
-                      {selectedProduct?.trademarkFeeUsd > 0 && (
-                        <span className="text-muted-foreground ml-1 text-xs">
-                          +{sym}
-                          {(selectedProduct.trademarkFeeEur ?? selectedProduct.trademarkFeeUsd).toFixed(2)} one-time
-                        </span>
-                      )}
-                    </Label>
-                  </div>
-                  {hasTrademark && (
-                    <div className="ml-6 space-y-2">
-                      <Input
-                        type="text"
-                        maxLength={15}
-                        value={trademarkText}
-                        onChange={(e) => setTrademarkText(e.target.value)}
-                        placeholder="Web address (max 15 chars)"
-                      />
-                      <div className="flex items-center gap-4">
-                        <Label>Text Color:</Label>
-                        <RadioGroup
-                          value={trademarkTextColor}
-                          onValueChange={(v) => setTrademarkTextColor(v as "white" | "black")}
-                          className="flex gap-4"
-                        >
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="white" id="tm-white" />
-                            <Label htmlFor="tm-white" className="cursor-pointer">
-                              White
-                            </Label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="black" id="tm-black" />
-                            <Label htmlFor="tm-black" className="cursor-pointer">
-                              Black
-                            </Label>
-                          </div>
-                        </RadioGroup>
+                          return (
+                            <div key={opt.key} className="space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`opt-${opt.key}`}
+                                  checked={!!sel?.enabled}
+                                  onCheckedChange={(c) => toggleOption(opt, !!c)}
+                                />
+                                <Label htmlFor={`opt-${opt.key}`} className="cursor-pointer">
+                                  {opt.label}
+                                  {priceHint && (
+                                    <span className="text-muted-foreground ml-1 text-xs">{priceHint}</span>
+                                  )}
+                                </Label>
+                              </div>
+                              {opt.description && (
+                                <p className="text-[11px] text-muted-foreground ml-6 -mt-1">{opt.description}</p>
+                              )}
+
+                              {/* Sub-choices (e.g. Static QR / Dynamic QR / Serial QR ID) */}
+                              {sel?.enabled && (opt.choices?.length ?? 0) > 0 && (
+                                <div className="ml-6">
+                                  <Select
+                                    value={sel.choiceKey || opt.choices![0].key}
+                                    onValueChange={(v) =>
+                                      setOptSel((prev) => ({
+                                        ...prev,
+                                        [opt.key]: { ...prev[opt.key], enabled: true, choiceKey: v },
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="h-8">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {opt.choices!.map((c) => {
+                                        const cPrice = optionPrice(opt, c.key);
+                                        return (
+                                          <SelectItem key={c.key} value={c.key}>
+                                            {c.label}
+                                            {cPrice > 0
+                                              ? ` (+${sym}${opt.pricingMode === "one_time" ? cPrice.toFixed(2) : cPrice.toFixed(3)}${opt.pricingMode === "one_time" ? "" : "/unit"})`
+                                              : ""}
+                                          </SelectItem>
+                                        );
+                                      })}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              )}
+
+                              {/* Trademark options bring the brand-text controls with them. */}
+                              {sel?.enabled && opt.studioModule === "trademark" && (
+                                <div className="ml-6 space-y-2">
+                                  <Input
+                                    type="text"
+                                    maxLength={15}
+                                    value={trademarkText}
+                                    onChange={(e) => setTrademarkText(e.target.value)}
+                                    placeholder="Web address (max 15 chars)"
+                                  />
+                                  <div className="flex items-center gap-4">
+                                    <Label>Text Color:</Label>
+                                    <RadioGroup
+                                      value={trademarkTextColor}
+                                      onValueChange={(v) => setTrademarkTextColor(v as "white" | "black")}
+                                      className="flex gap-4"
+                                    >
+                                      <div className="flex items-center space-x-2">
+                                        <RadioGroupItem value="white" id="tm-white" />
+                                        <Label htmlFor="tm-white" className="cursor-pointer">
+                                          White
+                                        </Label>
+                                      </div>
+                                      <div className="flex items-center space-x-2">
+                                        <RadioGroupItem value="black" id="tm-black" />
+                                        <Label htmlFor="tm-black" className="cursor-pointer">
+                                          Black
+                                        </Label>
+                                      </div>
+                                    </RadioGroup>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Select value={tmFont} onValueChange={setTmFont}>
+                                      <SelectTrigger className="h-8 flex-1" style={{ fontFamily: tmFont }}>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {FONT_OPTIONS.map((f) => (
+                                          <SelectItem key={f} value={f} style={{ fontFamily: f }}>
+                                            {f}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                    <Button
+                                      type="button"
+                                      variant={tmBold ? "default" : "outline"}
+                                      size="sm"
+                                      className="font-bold w-9"
+                                      onClick={() => setTmBold((v) => !v)}
+                                    >
+                                      B
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant={tmItalic ? "default" : "outline"}
+                                      size="sm"
+                                      className="italic w-9"
+                                      onClick={() => setTmItalic((v) => !v)}
+                                    >
+                                      I
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Select value={tmFont} onValueChange={setTmFont}>
-                          <SelectTrigger className="h-8 flex-1" style={{ fontFamily: tmFont }}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {FONT_OPTIONS.map((f) => (
-                              <SelectItem key={f} value={f} style={{ fontFamily: f }}>
-                                {f}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          type="button"
-                          variant={tmBold ? "default" : "outline"}
-                          size="sm"
-                          className="font-bold w-9"
-                          onClick={() => setTmBold((v) => !v)}
-                        >
-                          B
-                        </Button>
-                        <Button
-                          type="button"
-                          variant={tmItalic ? "default" : "outline"}
-                          size="sm"
-                          className="italic w-9"
-                          onClick={() => setTmItalic((v) => !v)}
-                        >
-                          I
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+                    ));
+                  })()}
                 </div>
-              </div>
+              )}
 
               {/* Logo + background uploads appear once "Add Print" is enabled. */}
               {hasPrint && (

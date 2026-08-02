@@ -4,7 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Currency, QuoteRequestDto } from './pricing.dto';
+import { Currency, QuoteRequestDto, SelectedOptionDto } from './pricing.dto';
+import { effectiveOptions, LEGACY_OPTION_KEYS } from './product-options';
 
 /**
  * A single line in a price breakdown. `kind` distinguishes per-unit charges
@@ -52,6 +53,11 @@ export class PricingService {
     return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 
+  /** Per-unit prices keep 3 decimals (suppliers price in mills, e.g. €0.018/unit). */
+  private round3(value: number): number {
+    return Math.round((value + Number.EPSILON) * 1000) / 1000;
+  }
+
   /**
    * Resolve a per-currency amount, falling back to the USD value when a
    * currency-specific override is not configured. Returns 0 for empty inputs.
@@ -73,7 +79,10 @@ export class PricingService {
 
     const product = await this.prisma.product.findUnique({
       where: { id: req.productId },
-      include: { pricingTiers: { orderBy: { minQuantity: 'asc' } } },
+      include: {
+        pricingTiers: { orderBy: { minQuantity: 'asc' } },
+        options: { orderBy: { sortOrder: 'asc' } },
+      },
     });
 
     if (!product) {
@@ -124,73 +133,47 @@ export class PricingService {
       ),
     );
 
-    // 2) Print add-on (USD-only fields; applied as the amount in the chosen currency).
-    if (req.printType === 'color' && product.colorPrintExtraUsd > 0) {
-      components.push(
-        this.perUnit(
-          'print_color',
-          'Full-colour print',
-          product.colorPrintExtraUsd,
-          quantity,
-        ),
-      );
-    } else if (req.printType === 'black' && product.printExtraUsd > 0) {
-      components.push(
-        this.perUnit(
-          'print_black',
-          'Black print',
-          product.printExtraUsd,
-          quantity,
-        ),
-      );
-    }
+    // 2) Customization add-ons — driven entirely by the supplier's configured
+    //    options for this product (persisted rows, or the legacy-column
+    //    synthesis for products that haven't been re-saved yet).
+    const options = effectiveOptions(product);
+    const selections = this.normalizeSelections(req);
+    const optionByKey = new Map(options.map((o) => [o.key, o]));
 
-    // 3) Logo printing add-on (per unit).
-    if (req.hasLogo && product.logoExtraUsd > 0) {
-      components.push(
-        this.perUnit('logo', 'Logo printing', product.logoExtraUsd, quantity),
-      );
-    }
+    for (const sel of selections) {
+      const option = optionByKey.get(sel.key);
+      if (!option || !option.isActive) continue; // unknown/disabled keys are ignored, never priced
 
-    // 4) QR code add-on (per unit).
-    if (req.qrEnabled) {
-      const qrUnit = this.resolve(currency, {
-        usd: product.qrCodePriceUsd,
-        eur: product.qrCodePriceEur,
-        gbp: product.qrCodePriceGbp,
-      });
-      if (qrUnit > 0)
-        components.push(this.perUnit('qr_code', 'QR code', qrUnit, quantity));
-    }
+      const choice = sel.choiceKey
+        ? option.choices?.find((c) => c.key === sel.choiceKey)
+        : undefined;
+      // A choice with its own price overrides the option's base price.
+      const unit =
+        choice && choice.priceUsd != null
+          ? this.resolve(currency, {
+              usd: choice.priceUsd,
+              eur: choice.priceEur,
+              gbp: choice.priceGbp,
+            })
+          : this.resolve(currency, {
+              usd: option.priceUsd,
+              eur: option.priceEur,
+              gbp: option.priceGbp,
+            });
+      if (unit <= 0) continue;
 
-    // 5) Design setup — one-time flat fee.
-    if (req.hasCustomDesign) {
-      const designFee = this.resolve(currency, {
-        usd: product.designSetupFeeUsd,
-        eur: product.designSetupFeeEur,
-        gbp: product.designSetupFeeGbp,
-      });
-      if (designFee > 0)
-        components.push(
-          this.flat('design_setup', 'Custom design setup', designFee),
-        );
-    }
-
-    // 6) Trademark / branding — one-time flat fee.
-    if (req.trademarkEnabled) {
-      const tmFee = this.resolve(currency, {
-        usd: product.trademarkFeeUsd,
-        eur: product.trademarkFeeEur,
-        gbp: product.trademarkFeeGbp,
-      });
-      if (tmFee > 0)
-        components.push(this.flat('trademark', 'Trademark / branding', tmFee));
+      const label = choice ? `${option.label} — ${choice.label}` : option.label;
+      if (option.pricingMode === 'one_time') {
+        components.push(this.flat(option.key, label, unit));
+      } else {
+        components.push(this.perUnit(option.key, label, unit, quantity));
+      }
     }
 
     const perUnitComponents = components.filter((c) => c.kind === 'per_unit');
     const flatComponents = components.filter((c) => c.kind === 'flat');
 
-    const unitPrice = this.round(
+    const unitPrice = this.round3(
       perUnitComponents.reduce((sum, c) => sum + c.unitAmount, 0),
     );
     const lineSubtotal = this.round(unitPrice * quantity);
@@ -211,6 +194,32 @@ export class PricingService {
     };
   }
 
+  /**
+   * Turn a quote request into a list of selected option keys. Prefers the
+   * explicit `selectedOptions` array; falls back to mapping the legacy boolean
+   * flags onto the well-known default option keys so older clients (and stored
+   * cart/order snapshots) keep pricing identically.
+   */
+  private normalizeSelections(req: QuoteRequestDto): SelectedOptionDto[] {
+    if (Array.isArray(req.selectedOptions)) {
+      const seen = new Set<string>();
+      return req.selectedOptions.filter((s) => {
+        if (!s || typeof s.key !== 'string' || seen.has(s.key)) return false;
+        seen.add(s.key);
+        return true;
+      });
+    }
+
+    const selections: SelectedOptionDto[] = [];
+    if (req.printType === 'color') selections.push({ key: LEGACY_OPTION_KEYS.fullColorPrint });
+    else if (req.printType === 'black') selections.push({ key: LEGACY_OPTION_KEYS.blackPrint });
+    if (req.hasLogo) selections.push({ key: LEGACY_OPTION_KEYS.logo });
+    if (req.qrEnabled) selections.push({ key: LEGACY_OPTION_KEYS.qrCode });
+    if (req.hasCustomDesign) selections.push({ key: LEGACY_OPTION_KEYS.designSetup });
+    if (req.trademarkEnabled) selections.push({ key: LEGACY_OPTION_KEYS.trademark });
+    return selections;
+  }
+
   private perUnit(
     code: string,
     label: string,
@@ -221,7 +230,7 @@ export class PricingService {
       code,
       label,
       kind: 'per_unit',
-      unitAmount: this.round(unitAmount),
+      unitAmount: this.round3(unitAmount),
       quantity,
       amount: this.round(unitAmount * quantity),
     };

@@ -45,15 +45,22 @@ const ProtectedRoute = ({ children, allowedRoles }: ProtectedRouteProps) => {
   }
 
   const isSupplierOrAdmin = userRoles.includes('supplier') || userRoles.includes('admin');
-  // Platform owners live on /platform; suppliers on their /supplier console.
-  const homePath = userRoles.includes('admin') ? '/platform' : '/supplier';
+  // Each console has its own home: platform owners on /platform, EUP on /eup,
+  // suppliers on /supplier. An EUP account also carries the `supplier` role
+  // (its Supplier row anchors products and payouts), so `eup` is checked first.
+  const homePath = userRoles.includes('admin')
+    ? '/platform'
+    : userRoles.includes('eup')
+      ? '/eup'
+      : '/supplier';
+  const consolePaths = ['/supplier', '/platform', '/eup'];
 
   if (allowedRoles) {
     const hasRole = allowedRoles.some((r) => userRoles.includes(r));
     if (!hasRole) {
       return <Navigate to={isSupplierOrAdmin ? homePath : "/dashboard"} replace />;
     }
-  } else if (isSupplierOrAdmin && !location.pathname.startsWith("/supplier") && !location.pathname.startsWith("/platform")) {
+  } else if (isSupplierOrAdmin && !consolePaths.some((p) => location.pathname.startsWith(p))) {
     // Suppliers can use the same shopping / design flow as customers; other
     // non-console areas redirect to their home dashboard.
     const customerFlowPaths = [

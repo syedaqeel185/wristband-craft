@@ -33,15 +33,18 @@ const SupplierLogin = () => {
       });
 
       const roles = data.user?.roles || [];
-      if (!roles.some((role: string) => role === 'admin' || role === 'supplier')) {
-        toast.error('Access denied - Supplier or Admin only');
+      if (!roles.some((role: string) => role === 'admin' || role === 'supplier' || role === 'eup')) {
+        toast.error('Access denied - Supplier, EUP or Admin only');
         return;
       }
 
       setToken(data.accessToken);
       toast.success('Signed in successfully!');
-      // Platform owners land on the owner dashboard; suppliers on their console.
-      navigate(roles.includes('admin') ? '/platform' : '/supplier');
+      // Each role lands on its own console. EUP accounts also hold the
+      // `supplier` role, so `eup` is checked before falling through.
+      navigate(
+        roles.includes('admin') ? '/platform' : roles.includes('eup') ? '/eup' : '/supplier',
+      );
     } catch (error: any) {
       toast.error(error.message || 'Login failed');
     } finally {
@@ -57,7 +60,7 @@ const SupplierLogin = () => {
             <BrandLogo className="h-14 w-auto" />
           </div>
           <CardTitle className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            Supplier / Admin Login
+            Supplier / EUP / Admin Login
           </CardTitle>
           <CardDescription>
             Sign in to access your dashboard

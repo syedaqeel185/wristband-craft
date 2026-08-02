@@ -15,9 +15,12 @@ import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
 import { AdminService } from './admin.service';
 import {
+  AssignWholesalerDto,
   CreateCouponDto,
   CreatePlanDto,
+  SetProductionDto,
   SetSupplierCountryDto,
+  SetWholesalerDto,
   UpdateCouponDto,
   UpdatePlanDto,
   UpdateSubscriptionDto,
@@ -67,6 +70,30 @@ export class AdminController {
   @Delete('suppliers/:id')
   remove(@Request() req: any, @Param('id') id: string) {
     return this.admin.deleteSupplier(id, { userId: req.user.id });
+  }
+
+  // ---- EUP management ----
+  // `promote-eup` turns a supplier INTO an EUP; `assign-eup` points a supplier
+  // AT one. Two very different things — hence the deliberately distinct names.
+
+  @Get('wholesalers')
+  wholesalers() {
+    return this.admin.listWholesalers();
+  }
+
+  @Patch('suppliers/:id/promote-eup')
+  promoteToEup(@Request() req: any, @Param('id') id: string, @Body() dto: SetWholesalerDto) {
+    return this.admin.promoteSupplierToEup(id, dto, { userId: req.user.id });
+  }
+
+  @Patch('suppliers/:id/production')
+  setProduction(@Request() req: any, @Param('id') id: string, @Body() dto: SetProductionDto) {
+    return this.admin.setSupplierProduction(id, dto.hasOwnProduction, { userId: req.user.id });
+  }
+
+  @Patch('suppliers/:id/assign-eup')
+  assignToEup(@Request() req: any, @Param('id') id: string, @Body() dto: AssignWholesalerDto) {
+    return this.admin.assignSupplierToEup(id, dto.wholesalerId ?? null, { userId: req.user.id });
   }
 
   @Get('subscriptions')

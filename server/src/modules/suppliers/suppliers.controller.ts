@@ -52,6 +52,13 @@ export class SuppliersController {
     return this.suppliersService.createProduct(req.user.id, dto);
   }
 
+  // Static route — must precede the ':productId' route below.
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('me/products/reorder')
+  reorderProducts(@Request() req: any, @Body() dto: { productIds: string[] }) {
+    return this.suppliersService.reorderProducts(req.user.id, dto?.productIds ?? []);
+  }
+
   @UseGuards(AuthGuard('jwt'))
   @Patch('me/products/:productId')
   updateProduct(@Request() req: any, @Param('productId') productId: string, @Body() dto: any) {

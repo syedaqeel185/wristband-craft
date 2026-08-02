@@ -28,7 +28,12 @@ import SupplierBilling from "./pages/SupplierBilling";
 import SupplierPayments from "./pages/SupplierPayments";
 import SupplierShipping from "./pages/SupplierShipping";
 import SupplierProfile from "./pages/SupplierProfile";
+import SupplierWholesaler from "./pages/SupplierWholesaler";
 import PlatformDashboard from "./pages/PlatformDashboard";
+import EupDashboard from "./pages/EupDashboard";
+import EupPrices from "./pages/EupPrices";
+import EupFreight from "./pages/EupFreight";
+import EupSuppliers from "./pages/EupSuppliers";
 
 // Removed clearOldSessions() to fix persistent login issue
 
@@ -172,10 +177,52 @@ const App = () => (
             }
           />
           <Route
+            path="/supplier/wholesaler"
+            element={
+              <ProtectedRoute allowedRoles={['supplier']}>
+                <SupplierWholesaler />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/platform"
             element={
               <ProtectedRoute allowedRoles={['admin']}>
                 <PlatformDashboard />
+              </ProtectedRoute>
+            }
+          />
+          {/* EUP console — the manufacturer that sells to suppliers. Separate
+              from /supplier: EUP has no retail storefront, products or billing. */}
+          <Route
+            path="/eup"
+            element={
+              <ProtectedRoute allowedRoles={['eup']}>
+                <EupDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/eup/suppliers"
+            element={
+              <ProtectedRoute allowedRoles={['eup']}>
+                <EupSuppliers />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/eup/prices"
+            element={
+              <ProtectedRoute allowedRoles={['eup']}>
+                <EupPrices />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/eup/freight"
+            element={
+              <ProtectedRoute allowedRoles={['eup']}>
+                <EupFreight />
               </ProtectedRoute>
             }
           />

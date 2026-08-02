@@ -220,6 +220,20 @@ model Supplier {
   // but cannot create products or accept new orders.
   status        String   @default("ACTIVE")
 
+  // ---- Wholesaler / production model -------------------------------------
+  // A wholesaler is a Supplier flagged `isWholesaler`: it sells to other
+  // suppliers (not end customers) and reuses the full product/options/pricing
+  // engine for its catalog. The platform's own production is the single
+  // `isHouseWholesaler` account, used as the fallback when a supplier has no
+  // wholesaler assigned. Becoming a wholesaler is admin-gated.
+  isWholesaler      Boolean @default(false) @map("is_wholesaler")
+  isHouseWholesaler Boolean @default(false) @map("is_house_wholesaler")
+  // Whether this supplier manufactures in-house. When false, they must place a
+  // wholesale order to fulfil each customer order (enforced on order accept).
+  hasOwnProduction  Boolean @default(true) @map("has_own_production")
+  // Admin-assigned wholesaler this supplier orders from. Null → house wholesaler.
+  wholesalerId      String? @map("wholesaler_id")
+
   user           Profile         @relation(fields: [userId], references: [id])
   countryRef     Country?        @relation(fields: [countryCode], references: [code])
   orders         Order[]
@@ -231,8 +245,29 @@ model Supplier {
   transactions   PaymentTransaction[]
   shippingRates  ShippingRate[]
 
+  // Wholesaler assignment (self-relation).
+  assignedWholesaler Supplier?  @relation("SupplierWholesaler", fields: [wholesalerId], references: [id])
+  assignedSuppliers  Supplier[] @relation("SupplierWholesaler")
+
+  // As a wholesaler: discounts + offers it grants, and orders it receives.
+  discountsGranted   SupplierDiscount[] @relation("WholesalerDiscounts")
+  offers             WholesalerOffer[]
+  wholesaleOrdersReceived WholesaleOrder[] @relation("WholesaleSeller")
+  // As a buyer: discounts targeted at it, and wholesale orders it placed.
+  discountsReceived  SupplierDiscount[] @relation("SupplierDiscounts")
+  wholesaleOrdersPlaced   WholesaleOrder[] @relation("WholesaleBuyer")
+
+  // As EUP: the price lists + freight rates it sets for the suppliers it sells to.
+  eupPricesSet       EupPrice[]       @relation("EupPriceSeller")
+  eupFreightSet      EupFreightRate[] @relation("EupFreightSeller")
+  // As a supplier buying from EUP: prices + freight targeted at this account.
+  eupPricesReceived  EupPrice[]       @relation("EupPriceBuyer")
+  eupFreightReceived EupFreightRate[] @relation("EupFreightBuyer")
+
   @@index([countryCode])
   @@index([status])
+  @@index([isWholesaler])
+  @@index([wholesalerId])
   @@map("suppliers")
 }
 
@@ -520,6 +555,8 @@ model Product {
   minOrderQuantity Int      @default(1) @map("min_order_quantity")
   maxOrderQuantity Int?     @map("max_order_quantity")
   isActive         Boolean  @default(true) @map("is_active")
+  // Supplier-controlled position in their product list (lower = first).
+  sortOrder        Int      @default(0) @map("sort_order")
   imageUrls        String   @default("[]") @map("image_urls") // JSON string
 
   // Customization flags
@@ -535,10 +572,53 @@ model Product {
 
   supplier     Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   pricingTiers SupplierPricingTier[]
+  options      ProductOption[]
   designs      Design[]
   orders       Order[]
+  eupPrices    EupPrice[]
 
   @@map("products")
+}
+
+/// A supplier-configured customization add-on for a product (e.g. "Full-colour
+/// print", "RFID Sticker"). Fully dynamic: suppliers can rename, price, reorder,
+/// disable, and create unlimited options without code changes. Replaces the
+/// legacy fixed add-on columns on Product (kept for backward compatibility —
+/// see product-options synthesis in the pricing module).
+model ProductOption {
+  id          String  @id @default(uuid())
+  productId   String  @map("product_id")
+  /// Stable machine key (slug). Default template options use well-known keys
+  /// (black_print, full_color_print, logo_print, qr_code, design_setup,
+  /// trademark); custom options get generated slugs.
+  key         String
+  label       String
+  description String?
+  /// Optional display group, e.g. "Print", "Codes & tracking".
+  groupName   String? @map("group_name")
+  /// per_unit → multiplied by order quantity; one_time → flat fee per order.
+  pricingMode String  @default("per_unit") @map("pricing_mode")
+  priceUsd    Float   @default(0) @map("price_usd")
+  priceEur    Float?  @map("price_eur")
+  priceGbp    Float?  @map("price_gbp")
+  isActive    Boolean @default(true) @map("is_active")
+  sortOrder   Int     @default(0) @map("sort_order")
+  /// How the Design Studio renders this option:
+  /// toggle (generic checkbox) | print (artwork/logo upload) | qr | trademark
+  /// | design_setup (auto-applied when the customer customizes the design).
+  studioModule String @default("toggle") @map("studio_module")
+  /// Optional sub-choices as JSON: [{key,label,description?,priceUsd?,priceEur?,priceGbp?}].
+  /// A selected choice's price overrides the option price when provided.
+  choicesJson String? @map("choices_json")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, key])
+  @@index([productId])
+  @@map("product_options")
 }
 
 model SupplierPricingTier {
@@ -596,4 +676,203 @@ model PricingConfig {
   supplier                   Supplier? @relation(fields: [supplierId], references: [id])
 
   @@map("pricing_config")
+}
+
+// ---------------------------------------------------------------------------
+// Wholesaler layer: discounts, promotional offers, and supplier→wholesaler
+// orders. A wholesaler is a Supplier flagged `isWholesaler` (see Supplier).
+// ---------------------------------------------------------------------------
+
+/// A discount a wholesaler grants to the suppliers who buy from it. A row with
+/// `supplierId = null` is the wholesaler's default discount for every supplier;
+/// a row with a `supplierId` overrides the default for that specific supplier.
+model SupplierDiscount {
+  id           String   @id @default(uuid())
+  wholesalerId String   @map("wholesaler_id")
+  supplierId   String?  @map("supplier_id") // null = applies to all suppliers
+  percent      Float    @default(0)
+  note         String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  wholesaler Supplier  @relation("WholesalerDiscounts", fields: [wholesalerId], references: [id], onDelete: Cascade)
+  supplier   Supplier? @relation("SupplierDiscounts", fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([wholesalerId, supplierId])
+  @@index([wholesalerId])
+  @@map("supplier_discounts")
+}
+
+/// A promotional offer a wholesaler advertises to attract suppliers. Shown as a
+/// banner on the supplier's "Order from wholesaler" page. `discountPercent`, when
+/// set, is applied on top of any base supplier discount (best price wins).
+model WholesalerOffer {
+  id              String    @id @default(uuid())
+  wholesalerId    String    @map("wholesaler_id")
+  title           String
+  description     String?
+  discountPercent Float?    @map("discount_percent")
+  code            String?
+  minQuantity     Int?      @map("min_quantity")
+  validFrom       DateTime? @map("valid_from")
+  validUntil      DateTime? @map("valid_until")
+  isActive        Boolean   @default(true) @map("is_active")
+  sortOrder       Int       @default(0) @map("sort_order")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  wholesaler Supplier @relation(fields: [wholesalerId], references: [id], onDelete: Cascade)
+
+  @@index([wholesalerId])
+  @@map("wholesaler_offers")
+}
+
+/// The fixed price EUP charges a supplier for a product, quoted per 1000 pcs.
+///
+/// This is the source of truth for what a supplier pays EUP — deliberately NOT
+/// derived from the supplier's own retail list price, so a supplier can never
+/// move its own cost by editing what it charges customers. Every value here is
+/// entered by EUP in its console; there are no price constants in code.
+///
+/// A row with `supplierId = null` is EUP's default price for that product for
+/// every supplier; a row with a `supplierId` overrides it for that supplier.
+/// When no row resolves, the product is simply not orderable by that supplier.
+model EupPrice {
+  id           String  @id @default(uuid())
+  wholesalerId String  @map("wholesaler_id") // the EUP account selling
+  productId    String  @map("product_id")
+  supplierId   String? @map("supplier_id") // null = default for all suppliers
+
+  pricePer1000Eur Float  @map("price_per_1000_eur")
+  pricePer1000Usd Float? @map("price_per_1000_usd")
+  pricePer1000Gbp Float? @map("price_per_1000_gbp")
+
+  note      String?
+  isActive  Boolean   @default(true) @map("is_active")
+  validFrom DateTime? @map("valid_from")
+  validUntil DateTime? @map("valid_until")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  wholesaler Supplier  @relation("EupPriceSeller", fields: [wholesalerId], references: [id], onDelete: Cascade)
+  supplier   Supplier? @relation("EupPriceBuyer", fields: [supplierId], references: [id], onDelete: Cascade)
+  product    Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([wholesalerId, productId, supplierId])
+  @@index([wholesalerId])
+  @@index([productId])
+  @@map("eup_prices")
+}
+
+/// Freight EUP charges a supplier, billed on top of the goods price (never baked
+/// into `EupPrice`). Quoted per 1000 pcs with an optional minimum charge, and
+/// optionally free above a quantity threshold.
+///
+/// Resolution picks the most specific active row: an exact supplier + country +
+/// fulfilment-mode match beats a supplier-only row, which beats a country-only
+/// row, which beats EUP's catch-all. `fulfilmentMode = 'ANY'` matches both
+/// ship-to-supplier and drop-ship. When nothing matches, freight is zero.
+model EupFreightRate {
+  id           String  @id @default(uuid())
+  wholesalerId String  @map("wholesaler_id")
+  supplierId   String? @map("supplier_id") // null = applies to all suppliers
+  countryCode  String? @map("country_code") // null = any destination
+
+  // SHIP_TO_SUPPLIER | DROP_SHIP | ANY
+  fulfilmentMode String  @default("ANY") @map("fulfilment_mode")
+  label          String?
+
+  pricePer1000Eur Float  @map("price_per_1000_eur")
+  pricePer1000Usd Float? @map("price_per_1000_usd")
+  pricePer1000Gbp Float? @map("price_per_1000_gbp")
+
+  minChargeEur Float? @map("min_charge_eur")
+  minChargeUsd Float? @map("min_charge_usd")
+  minChargeGbp Float? @map("min_charge_gbp")
+
+  freeOverQty Int? @map("free_over_qty")
+  estMinDays  Int? @map("est_min_days")
+  estMaxDays  Int? @map("est_max_days")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  wholesaler Supplier  @relation("EupFreightSeller", fields: [wholesalerId], references: [id], onDelete: Cascade)
+  supplier   Supplier? @relation("EupFreightBuyer", fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([wholesalerId])
+  @@index([supplierId])
+  @@map("eup_freight_rates")
+}
+
+/// An order a supplier places with a wholesaler — to fulfil a specific customer
+/// order (`sourceOrderId`) or to restock (source null). Kept separate from the
+/// customer `Order` so the two flows never entangle. The supplier can have the
+/// wholesaler ship to itself (SHIP_TO_SUPPLIER) or drop-ship straight to the end
+/// customer (DROP_SHIP), passing the customer's delivery + contact details.
+model WholesaleOrder {
+  id              String  @id @default(uuid())
+  buyerSupplierId String  @map("buyer_supplier_id")
+  wholesalerId    String  @map("wholesaler_id")
+  productId       String? @map("product_id")
+  sourceOrderId   String? @map("source_order_id")
+
+  quantity        Int
+  currency        String  @default("EUR")
+  listUnitPrice   Float?  @map("list_unit_price")   // per-unit before discount
+  unitPrice       Float?  @map("unit_price")        // per-unit after discount
+  discountPercent Float   @default(0) @map("discount_percent")
+  totalPrice      Float   @map("total_price")
+  optionsJson         String? @map("options_json")
+  pricingSnapshotJson String? @map("pricing_snapshot_json")
+
+  // Goods vs freight, kept separate so the supplier always sees what EUP charged
+  // for product and what it charged to ship. totalPrice = goodsTotal + freightTotal.
+  eupPricePer1000 Float?  @map("eup_price_per_1000") // the EupPrice in force when ordered
+  goodsTotal      Float?  @map("goods_total")
+  freightTotal    Float?  @map("freight_total")
+  freightRateId   String? @map("freight_rate_id")
+
+  // SHIP_TO_SUPPLIER (default) | DROP_SHIP (deliver straight to the end customer)
+  fulfilmentMode   String  @default("SHIP_TO_SUPPLIER") @map("fulfilment_mode")
+  // End-customer delivery + contact details (name/phone/email/address) when drop-shipping.
+  customerInfoJson String? @map("customer_info_json")
+  shippingAddress  String? @map("shipping_address")
+
+  // PLACED | ACCEPTED | IN_PRODUCTION | SHIPPED | DELIVERED | CANCELLED
+  status         String  @default("PLACED")
+  // Payment the buyer supplier makes to the wholesaler (mirrors customer→supplier):
+  // null | awaiting_payment | paid. Method + receipt + Stripe references below.
+  paymentStatus            String?   @map("payment_status")
+  paymentMethodProvider    String?   @map("payment_method_provider")
+  paymentReceiptUrl        String?   @map("payment_receipt_url")
+  paymentReceiptUploadedAt DateTime? @map("payment_receipt_uploaded_at")
+  stripeSessionId          String?   @map("stripe_session_id")
+  stripePaymentIntentId    String?   @map("stripe_payment_intent_id")
+
+  // Production SLA. EUP starts production once the supplier has paid, and
+  // commits to delivery within PRODUCTION_SLA_DAYS of that payment.
+  paidAt              DateTime? @map("paid_at")
+  productionStartedAt DateTime? @map("production_started_at")
+  promisedDeliveryAt  DateTime? @map("promised_delivery_at")
+  trackingNumber String? @map("tracking_number")
+  trackingUrl    String? @map("tracking_url")
+  courier        String?
+  notes          String?
+  adminNotes     String? @map("admin_notes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  buyerSupplier Supplier @relation("WholesaleBuyer", fields: [buyerSupplierId], references: [id], onDelete: Cascade)
+  wholesaler    Supplier @relation("WholesaleSeller", fields: [wholesalerId], references: [id], onDelete: Cascade)
+
+  @@index([buyerSupplierId])
+  @@index([wholesalerId])
+  @@index([sourceOrderId])
+  @@map("wholesale_orders")
 }

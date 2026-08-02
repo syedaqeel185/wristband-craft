@@ -6,6 +6,7 @@ import { SUB_STATUS } from '../subscriptions/subscriptions.service';
 import {
   CreateCouponDto,
   CreatePlanDto,
+  SetWholesalerDto,
   UpdateCouponDto,
   UpdatePlanDto,
   UpdateSubscriptionDto,
@@ -129,6 +130,7 @@ export class AdminService {
       orderBy: { createdAt: 'desc' },
       include: {
         subscription: { include: { plan: true } },
+        assignedWholesaler: { select: { id: true, companyName: true } },
         _count: { select: { products: true, orders: true } },
       },
     });
@@ -142,6 +144,11 @@ export class AdminService {
       city: s.city,
       status: s.status,
       isVerified: s.isVerified,
+      isWholesaler: s.isWholesaler,
+      isHouseWholesaler: s.isHouseWholesaler,
+      hasOwnProduction: s.hasOwnProduction,
+      wholesalerId: s.wholesalerId,
+      assignedWholesaler: s.assignedWholesaler,
       rating: s.rating,
       createdAt: s.createdAt,
       productCount: s._count.products,
@@ -221,6 +228,132 @@ export class AdminService {
       metadata: { companyName: s.companyName },
     });
     return { success: true };
+  }
+
+  // ---- Wholesaler management ----
+
+  /** Every wholesaler, with how many suppliers are assigned to each. */
+  async listWholesalers() {
+    const wholesalers = await this.prisma.supplier.findMany({
+      where: { isWholesaler: true },
+      orderBy: [{ isHouseWholesaler: 'desc' }, { companyName: 'asc' }],
+      select: {
+        id: true,
+        companyName: true,
+        contactEmail: true,
+        country: true,
+        countryCode: true,
+        status: true,
+        isHouseWholesaler: true,
+        _count: { select: { products: true, assignedSuppliers: true } },
+      },
+    });
+    return wholesalers.map((w) => ({
+      id: w.id,
+      companyName: w.companyName,
+      contactEmail: w.contactEmail,
+      country: w.countryCode ?? w.country,
+      status: w.status,
+      isHouseWholesaler: w.isHouseWholesaler,
+      productCount: w._count.products,
+      assignedSupplierCount: w._count.assignedSuppliers,
+    }));
+  }
+
+  /**
+   * Promote a supplier to EUP (a wholesaler that sells to other suppliers), or
+   * demote it back; optionally mark it as the house EUP account.
+   *
+   * Promotion also grants the `eup` role, which is what routes the account to
+   * the EUP console and gates the price-list/freight endpoints. Demotion
+   * revokes it, so a demoted account cannot keep reaching EUP's tools.
+   *
+   * Not to be confused with `assignSupplierToEup`, which points a supplier AT
+   * an EUP rather than turning one INTO an EUP.
+   */
+  async promoteSupplierToEup(id: string, dto: SetWholesalerDto, actor: { userId: string }) {
+    const s = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!s) throw new NotFoundException('Supplier not found');
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Only one house wholesaler at a time.
+      if (dto.isWholesaler && dto.isHouseWholesaler) {
+        await tx.supplier.updateMany({
+          where: { isHouseWholesaler: true, id: { not: id } },
+          data: { isHouseWholesaler: false },
+        });
+      }
+
+      if (dto.isWholesaler) {
+        const existing = await tx.userRole.findFirst({ where: { userId: s.userId, role: 'eup' } });
+        if (!existing) await tx.userRole.create({ data: { userId: s.userId, role: 'eup' } });
+      } else {
+        await tx.userRole.deleteMany({ where: { userId: s.userId, role: 'eup' } });
+      }
+
+      return tx.supplier.update({
+        where: { id },
+        data: {
+          isWholesaler: dto.isWholesaler,
+          // Demoting a wholesaler also clears the house flag.
+          isHouseWholesaler: dto.isWholesaler ? dto.isHouseWholesaler ?? s.isHouseWholesaler : false,
+        },
+      });
+    });
+
+    await this.audit.log({
+      action: dto.isWholesaler ? 'supplier.make_wholesaler' : 'supplier.unmake_wholesaler',
+      entityType: 'supplier',
+      entityId: id,
+      actor: { userId: actor.userId, role: 'admin' },
+      metadata: { isHouseWholesaler: updated.isHouseWholesaler },
+    });
+    return updated;
+  }
+
+  /** Flag whether a supplier manufactures in-house (false → must use a wholesaler). */
+  async setSupplierProduction(id: string, hasOwnProduction: boolean, actor: { userId: string }) {
+    const s = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!s) throw new NotFoundException('Supplier not found');
+    const updated = await this.prisma.supplier.update({
+      where: { id },
+      data: { hasOwnProduction },
+    });
+    await this.audit.log({
+      action: 'supplier.set_production',
+      entityType: 'supplier',
+      entityId: id,
+      actor: { userId: actor.userId, role: 'admin' },
+      metadata: { hasOwnProduction },
+    });
+    return updated;
+  }
+
+  /** Assign the wholesaler a supplier orders from (null → house wholesaler fallback). */
+  /**
+   * Point a supplier at the EUP it buys from. Null falls back to the house EUP.
+   * The inverse of `promoteSupplierToEup`, which turns a supplier into one.
+   */
+  async assignSupplierToEup(id: string, wholesalerId: string | null, actor: { userId: string }) {
+    const s = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!s) throw new NotFoundException('Supplier not found');
+    if (wholesalerId) {
+      if (wholesalerId === id) throw new BadRequestException('A supplier cannot be its own wholesaler');
+      const w = await this.prisma.supplier.findUnique({ where: { id: wholesalerId } });
+      if (!w || !w.isWholesaler) throw new BadRequestException('Target is not a wholesaler');
+    }
+    const updated = await this.prisma.supplier.update({
+      where: { id },
+      data: { wholesalerId },
+    });
+    await this.audit.log({
+      action: 'supplier.assign_wholesaler',
+      entityType: 'supplier',
+      entityId: id,
+      actor: { userId: actor.userId, role: 'admin' },
+      metadata: { wholesalerId },
+    });
+    return updated;
   }
 
   async listSubscriptions(status?: string) {

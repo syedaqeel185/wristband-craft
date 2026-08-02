@@ -90,14 +90,29 @@ export const ProductDetailDialog = ({
               )}
             </div>
 
-            {(product.qrCodePriceUsd > 0 || product.designSetupFeeUsd > 0 || product.trademarkFeeUsd > 0 || product.colorPrintExtraUsd > 0) && (
+            {/* Customization options — exactly what the supplier configured on
+                this product, priced from the same source the checkout uses. */}
+            {(product.options || []).filter((o) => o.isActive).length > 0 && (
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">Add-on pricing</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Customization options</p>
                 <div className="flex flex-wrap gap-1">
-                  {product.colorPrintExtraUsd > 0 && <Badge variant="outline">Colour print +${product.colorPrintExtraUsd}/unit</Badge>}
-                  {product.qrCodePriceUsd > 0 && <Badge variant="outline">QR +${product.qrCodePriceUsd}/unit</Badge>}
-                  {product.designSetupFeeUsd > 0 && <Badge variant="outline">Design setup +${product.designSetupFeeUsd}</Badge>}
-                  {product.trademarkFeeUsd > 0 && <Badge variant="outline">Trademark +${product.trademarkFeeUsd}</Badge>}
+                  {(product.options || [])
+                    .filter((o) => o.isActive)
+                    .map((o) => {
+                      const price = o.priceEur ?? o.priceUsd ?? 0;
+                      const s = o.priceEur != null ? "€" : "$";
+                      return (
+                        <Badge key={o.key} variant="outline" title={o.description || undefined}>
+                          {o.label}
+                          {price > 0
+                            ? ` +${s}${price}${o.pricingMode === "one_time" ? " one-time" : "/unit"}`
+                            : ""}
+                          {o.choices && o.choices.length > 0
+                            ? ` (${o.choices.map((c) => c.label).join(" / ")})`
+                            : ""}
+                        </Badge>
+                      );
+                    })}
                 </div>
               </div>
             )}
