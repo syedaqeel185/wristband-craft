@@ -6,13 +6,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import Stripe from 'stripe';
+import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../../common/audit.service';
 import { PaymentMethodsService } from '../payment-methods/payment-methods.service';
 import { StripeConnectService } from '../payment-methods/stripe-connect.service';
 import { effectiveOptions } from '../pricing/product-options';
 import { EupPricingService, PRODUCTION_SLA_DAYS, type Currency, type FulfilmentMode } from './eup-pricing.service';
 import {
+  CreateEupSupplierDto,
   PlaceWholesaleOrderDto,
   SetProductionDto,
   UpdateWholesaleOrderStatusDto,
@@ -49,6 +53,7 @@ export class WholesaleService {
     private readonly paymentMethods: PaymentMethodsService,
     private readonly connect: StripeConnectService,
     private readonly eupPricing: EupPricingService,
+    private readonly audit: AuditService,
   ) {
     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_missing');
     this.clientUrl = process.env.CLIENT_URL || 'http://localhost:8080';
@@ -785,6 +790,255 @@ export class WholesaleService {
     if (!row) throw new NotFoundException('Offer not found');
     await this.prisma.wholesalerOffer.delete({ where: { id } });
     return { success: true };
+  }
+
+  // ---- EUP's book of suppliers --------------------------------------------
+  //
+  // EUP manages the suppliers that buy from IT — not every supplier on the
+  // platform. Global supplier administration stays with the platform owner at
+  // /platform. Scoping this way means a second EUP can never touch a rival's
+  // customers, and it keeps destructive actions away from accounts EUP has no
+  // relationship with.
+
+  /** The supplier, proven to belong to this EUP's book. */
+  private async requireOwnBuyer(wholesalerId: string, isHouse: boolean, supplierId: string) {
+    const supplier = await this.prisma.supplier.findUnique({ where: { id: supplierId } });
+    if (!supplier) throw new NotFoundException('Supplier not found');
+    const mine = supplier.wholesalerId === wholesalerId || (isHouse && supplier.wholesalerId === null);
+    if (!mine || supplier.id === wholesalerId) {
+      throw new ForbiddenException('That supplier does not buy from you');
+    }
+    return supplier;
+  }
+
+  /**
+   * Onboard a supplier into this EUP's book. Returns a generated one-time
+   * password for EUP to hand over; it is hashed before storage and never
+   * logged, and there is no way to read it back afterwards.
+   */
+  async createBuyer(userId: string, dto: CreateEupSupplierDto) {
+    const w = await this.requireWholesaler(userId);
+    const email = dto.email.trim().toLowerCase();
+
+    if (await this.prisma.profile.findUnique({ where: { email } })) {
+      throw new BadRequestException('An account with that email already exists');
+    }
+
+    const countryCode = dto.countryCode?.trim().toUpperCase().slice(0, 2) || null;
+    if (countryCode && !(await this.prisma.country.findUnique({ where: { code: countryCode } }))) {
+      throw new BadRequestException('Unknown country code');
+    }
+
+    // Generated, not chosen: EUP hands this over and the supplier changes it.
+    const tempPassword = `EUW-${randomBytes(9).toString('base64url')}`;
+    const created = await this.prisma.$transaction(async (tx) => {
+      const profile = await tx.profile.create({
+        data: {
+          email,
+          password: await bcrypt.hash(tempPassword, 10),
+          fullName: dto.contactName?.trim() || dto.companyName.trim(),
+          isVerified: true,
+        },
+      });
+      await tx.userRole.create({ data: { userId: profile.id, role: 'supplier' } });
+      return tx.supplier.create({
+        data: {
+          userId: profile.id,
+          companyName: dto.companyName.trim(),
+          contactEmail: email,
+          contactPhone: dto.contactPhone?.trim() || null,
+          countryCode,
+          country: countryCode,
+          hasOwnProduction: dto.hasOwnProduction ?? false,
+          wholesalerId: w.id,
+          status: 'ACTIVE',
+        },
+      });
+    });
+
+    await this.audit.log({
+      action: 'eup.supplier.create',
+      entityType: 'supplier',
+      entityId: created.id,
+      actor: { userId, role: 'eup' },
+      metadata: { companyName: created.companyName, wholesalerId: w.id },
+    });
+    return { supplier: created, tempPassword };
+  }
+
+  async setBuyerStatus(userId: string, supplierId: string, status: 'ACTIVE' | 'SUSPENDED') {
+    const w = await this.requireWholesaler(userId);
+    const supplier = await this.requireOwnBuyer(w.id, w.isHouseWholesaler, supplierId);
+    const updated = await this.prisma.supplier.update({
+      where: { id: supplier.id },
+      data: { status },
+    });
+    await this.audit.log({
+      action: status === 'SUSPENDED' ? 'eup.supplier.suspend' : 'eup.supplier.activate',
+      entityType: 'supplier',
+      entityId: supplier.id,
+      actor: { userId, role: 'eup' },
+      metadata: { wholesalerId: w.id },
+    });
+    return updated;
+  }
+
+  async setBuyerProduction(userId: string, supplierId: string, hasOwnProduction: boolean) {
+    const w = await this.requireWholesaler(userId);
+    const supplier = await this.requireOwnBuyer(w.id, w.isHouseWholesaler, supplierId);
+    const updated = await this.prisma.supplier.update({
+      where: { id: supplier.id },
+      data: { hasOwnProduction },
+    });
+    await this.audit.log({
+      action: 'eup.supplier.set_production',
+      entityType: 'supplier',
+      entityId: supplier.id,
+      actor: { userId, role: 'eup' },
+      metadata: { hasOwnProduction },
+    });
+    return updated;
+  }
+
+  /**
+   * Remove a supplier from the platform entirely.
+   *
+   * Refused once the supplier has any customer order or any wholesale order:
+   * the platform-owner version detaches orders to keep the history, but an EUP
+   * orphaning another party's sales records is not a call EUP should make.
+   * Suspension is the reversible answer and is what we point them at.
+   */
+  async deleteBuyer(userId: string, supplierId: string) {
+    const w = await this.requireWholesaler(userId);
+    const supplier = await this.requireOwnBuyer(w.id, w.isHouseWholesaler, supplierId);
+
+    const [orderCount, wholesaleCount] = await Promise.all([
+      this.prisma.order.count({ where: { supplierId: supplier.id } }),
+      this.prisma.wholesaleOrder.count({ where: { buyerSupplierId: supplier.id } }),
+    ]);
+    if (orderCount > 0 || wholesaleCount > 0) {
+      throw new BadRequestException({
+        message: `${supplier.companyName} has ${orderCount} customer order(s) and ${wholesaleCount} order(s) with you. Suspend them instead — deleting would detach those records.`,
+        code: 'SUPPLIER_HAS_ORDERS',
+        orderCount,
+        wholesaleCount,
+      });
+    }
+
+    await this.prisma.supplier.delete({ where: { id: supplier.id } });
+    await this.audit.log({
+      action: 'eup.supplier.delete',
+      entityType: 'supplier',
+      entityId: supplier.id,
+      actor: { userId, role: 'eup' },
+      metadata: { companyName: supplier.companyName, wholesalerId: w.id },
+    });
+    return { success: true };
+  }
+
+  // ---- Sales insights ------------------------------------------------------
+
+  /**
+   * The things that quietly cost EUP money: products no supplier can see
+   * because they have no price, suppliers who have never ordered, and orders
+   * stuck waiting on payment. Each entry is something EUP can act on today.
+   */
+  async getInsights(userId: string) {
+    const w = await this.requireWholesaler(userId);
+    const [products, prices, buyers, orders] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { supplierId: w.id, isActive: true },
+        select: { id: true, name: true },
+      }),
+      this.prisma.eupPrice.findMany({
+        where: { wholesalerId: w.id, isActive: true },
+        select: { productId: true, supplierId: true },
+      }),
+      this.listBuyers(userId),
+      this.prisma.wholesaleOrder.findMany({
+        where: { wholesalerId: w.id },
+        select: {
+          id: true,
+          buyerSupplierId: true,
+          totalPrice: true,
+          currency: true,
+          status: true,
+          paymentStatus: true,
+          promisedDeliveryAt: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    const hasDefault = new Set(prices.filter((p) => !p.supplierId).map((p) => p.productId));
+    // A product with no default price is invisible to every supplier who has no
+    // explicit override — the single most common reason nothing sells.
+    const unpricedProducts = products.filter((p) => !hasDefault.has(p.id));
+
+    const buyersWithOrders = new Set(orders.map((o) => o.buyerSupplierId));
+    const dormantBuyers = buyers.filter((b) => !buyersWithOrders.has(b.id));
+
+    const paid = orders.filter((o) => o.paymentStatus === 'paid');
+    const awaitingPayment = orders.filter(
+      (o) => o.paymentStatus !== 'paid' && o.status !== 'CANCELLED',
+    );
+    const now = Date.now();
+    const overdue = orders.filter(
+      (o) =>
+        o.promisedDeliveryAt &&
+        !['DELIVERED', 'CANCELLED'].includes(o.status) &&
+        o.promisedDeliveryAt.getTime() < now,
+    );
+
+    // Revenue by month over the last 6 months, oldest first.
+    const months: Array<{ month: string; revenue: number; orders: number }> = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i, 1);
+      d.setHours(0, 0, 0, 0);
+      const next = new Date(d);
+      next.setMonth(next.getMonth() + 1);
+      const inMonth = paid.filter((o) => o.createdAt >= d && o.createdAt < next);
+      months.push({
+        month: d.toLocaleString('en', { month: 'short' }),
+        revenue: this.round3(inMonth.reduce((s, o) => s + (o.totalPrice || 0), 0)),
+        orders: inMonth.length,
+      });
+    }
+
+    // Who actually brings the money in.
+    const spendByBuyer = new Map<string, number>();
+    for (const o of paid) {
+      spendByBuyer.set(o.buyerSupplierId, (spendByBuyer.get(o.buyerSupplierId) ?? 0) + (o.totalPrice || 0));
+    }
+    const topBuyers = buyers
+      .map((b) => ({ id: b.id, companyName: b.companyName, spend: this.round3(spendByBuyer.get(b.id) ?? 0) }))
+      .filter((b) => b.spend > 0)
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, 5);
+
+    return {
+      totals: {
+        buyers: buyers.length,
+        activeBuyers: buyersWithOrders.size,
+        dormantBuyers: dormantBuyers.length,
+        paidRevenue: this.round3(paid.reduce((s, o) => s + (o.totalPrice || 0), 0)),
+        awaitingPaymentValue: this.round3(
+          awaitingPayment.reduce((s, o) => s + (o.totalPrice || 0), 0),
+        ),
+        awaitingPaymentCount: awaitingPayment.length,
+        overdueCount: overdue.length,
+      },
+      unpricedProducts,
+      dormantBuyers: dormantBuyers.map((b) => ({
+        id: b.id,
+        companyName: b.companyName,
+        contactEmail: b.contactEmail,
+        hasOwnProduction: b.hasOwnProduction,
+      })),
+      months,
+      topBuyers,
+    };
   }
 
   // ---- EUP price lists ----------------------------------------------------

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   CheckCircle2,
@@ -9,6 +10,7 @@ import {
   Clock,
   Euro,
   Package,
+  TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,9 +20,11 @@ import { Badge } from "@/components/ui/badge";
 import EupLayout from "@/components/EupLayout";
 import {
   getWholesaleInbound,
+  getEupInsights,
   updateWholesaleOrderStatus,
   wholesalerMarkOrderPaid,
   type WholesaleOrder,
+  type EupInsights,
 } from "@/lib/api";
 import {
   NEXT_STATUS,
@@ -38,11 +42,17 @@ import {
  */
 export default function EupDashboard() {
   const [orders, setOrders] = useState<WholesaleOrder[]>([]);
+  const [insights, setInsights] = useState<EupInsights | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     try {
-      setOrders(await getWholesaleInbound());
+      const [o, i] = await Promise.all([
+        getWholesaleInbound(),
+        getEupInsights().catch(() => null),
+      ]);
+      setOrders(o);
+      setInsights(i);
     } catch (e: any) {
       toast.error(e.message || "Failed to load orders");
     } finally {
@@ -103,6 +113,8 @@ export default function EupDashboard() {
         <Stat label="Paid revenue" value={money2(stats.revenue)} icon={Euro} />
       </div>
 
+      {insights ? <SalesBlockers insights={insights} /> : null}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">All orders</CardTitle>
@@ -132,6 +144,127 @@ export default function EupDashboard() {
         </CardContent>
       </Card>
     </EupLayout>
+  );
+}
+
+/**
+ * What is costing EUP sales right now, each with the action that fixes it.
+ *
+ * These are the silent failure modes: a product with no price is invisible to
+ * every supplier, and a supplier who has never ordered is a relationship that
+ * was set up and then forgotten. Neither shows up as an error anywhere.
+ */
+function SalesBlockers({ insights }: { insights: EupInsights }) {
+  const { unpricedProducts, dormantBuyers, totals, topBuyers, months } = insights;
+  const peak = Math.max(1, ...months.map((m) => m.revenue));
+  const nothingWrong = !unpricedProducts.length && !dormantBuyers.length && !totals.awaitingPaymentCount;
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-primary" /> Growing your sales
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {nothingWrong ? (
+            <p className="text-muted-foreground">
+              Nothing is blocking sales — every product is priced and every supplier has ordered.
+            </p>
+          ) : null}
+
+          {unpricedProducts.length ? (
+            <div className="rounded border border-amber-300 bg-amber-50 p-3">
+              <div className="font-medium text-amber-900">
+                {unpricedProducts.length} product{unpricedProducts.length > 1 ? "s" : ""} nobody can buy
+              </div>
+              <p className="text-xs text-amber-800 mt-0.5">
+                No default price, so these are hidden from every supplier's catalogue:{" "}
+                {unpricedProducts.map((p) => p.name).join(", ")}
+              </p>
+              <Link to="/eup/prices">
+                <Button size="sm" variant="outline" className="mt-2">
+                  Set prices
+                </Button>
+              </Link>
+            </div>
+          ) : null}
+
+          {dormantBuyers.length ? (
+            <div className="rounded border border-blue-300 bg-blue-50 p-3">
+              <div className="font-medium text-blue-900">
+                {dormantBuyers.length} supplier{dormantBuyers.length > 1 ? "s have" : " has"} never ordered
+              </div>
+              <p className="text-xs text-blue-800 mt-0.5">
+                {dormantBuyers
+                  .slice(0, 4)
+                  .map((b) => b.companyName)
+                  .join(", ")}
+                {dormantBuyers.length > 4 ? ` +${dormantBuyers.length - 4} more` : ""}
+              </p>
+              <p className="text-xs text-blue-800 mt-1">
+                Worth checking they have a price set and know they can order.
+              </p>
+            </div>
+          ) : null}
+
+          {totals.awaitingPaymentCount ? (
+            <div className="rounded border p-3">
+              <div className="font-medium">
+                {money2(totals.awaitingPaymentValue)} awaiting payment
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {totals.awaitingPaymentCount} order{totals.awaitingPaymentCount > 1 ? "s" : ""} can't
+                enter production until paid. Confirm any receipts with <b>Mark paid</b> below.
+              </p>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Revenue — last 6 months</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-end gap-2 h-28">
+            {months.map((m) => (
+              <div key={m.month} className="flex-1 flex flex-col items-center gap-1">
+                <div
+                  className="w-full rounded-t bg-primary/70 min-h-[2px]"
+                  style={{ height: `${(m.revenue / peak) * 100}%` }}
+                  title={`${m.month}: ${money2(m.revenue)} (${m.orders} orders)`}
+                />
+                <span className="text-[10px] text-muted-foreground">{m.month}</span>
+              </div>
+            ))}
+          </div>
+
+          {topBuyers.length ? (
+            <div>
+              <div className="text-xs font-medium text-muted-foreground mb-1">
+                Top suppliers by spend
+              </div>
+              <div className="space-y-1">
+                {topBuyers.map((b) => (
+                  <div key={b.id} className="flex justify-between text-sm">
+                    <span className="truncate">{b.companyName}</span>
+                    <span className="font-medium">{money2(b.spend)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No paid orders yet.</p>
+          )}
+
+          <div className="text-xs text-muted-foreground">
+            {totals.activeBuyers} of {totals.buyers} suppliers have ordered.
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

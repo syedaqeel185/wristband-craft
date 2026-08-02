@@ -34,6 +34,7 @@ import EupDashboard from "./pages/EupDashboard";
 import EupPrices from "./pages/EupPrices";
 import EupFreight from "./pages/EupFreight";
 import EupSuppliers from "./pages/EupSuppliers";
+import EupPayments from "./pages/EupPayments";
 
 // Removed clearOldSessions() to fix persistent login issue
 
@@ -223,6 +224,14 @@ const App = () => (
             element={
               <ProtectedRoute allowedRoles={['eup']}>
                 <EupFreight />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/eup/payments"
+            element={
+              <ProtectedRoute allowedRoles={['eup']}>
+                <EupPayments />
               </ProtectedRoute>
             }
           />

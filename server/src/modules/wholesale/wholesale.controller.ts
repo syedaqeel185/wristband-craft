@@ -14,8 +14,10 @@ import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
 import { WholesaleService } from './wholesale.service';
 import {
+  CreateEupSupplierDto,
   PlaceWholesaleOrderDto,
   SetProductionDto,
+  SetSupplierStatusDto,
   UpdateWholesaleOrderStatusDto,
   UpsertDiscountDto,
   UpsertEupFreightDto,
@@ -118,6 +120,39 @@ export class WholesaleController {
   @Roles('eup')
   buyers(@Request() req: any) {
     return this.wholesale.listBuyers(req.user.id);
+  }
+
+  /** Onboard a supplier into EUP's book. Returns a one-time password. */
+  @Post('me/buyers')
+  @Roles('eup')
+  createBuyer(@Request() req: any, @Body() dto: CreateEupSupplierDto) {
+    return this.wholesale.createBuyer(req.user.id, dto);
+  }
+
+  @Patch('me/buyers/:id/status')
+  @Roles('eup')
+  setBuyerStatus(@Request() req: any, @Param('id') id: string, @Body() dto: SetSupplierStatusDto) {
+    return this.wholesale.setBuyerStatus(req.user.id, id, dto.status as 'ACTIVE' | 'SUSPENDED');
+  }
+
+  @Patch('me/buyers/:id/production')
+  @Roles('eup')
+  setBuyerProduction(@Request() req: any, @Param('id') id: string, @Body() dto: SetProductionDto) {
+    return this.wholesale.setBuyerProduction(req.user.id, id, dto.hasOwnProduction);
+  }
+
+  @Delete('me/buyers/:id')
+  @Roles('eup')
+  deleteBuyer(@Request() req: any, @Param('id') id: string) {
+    return this.wholesale.deleteBuyer(req.user.id, id);
+  }
+
+  // ---- EUP: what is costing it sales ----
+
+  @Get('me/insights')
+  @Roles('eup')
+  insights(@Request() req: any) {
+    return this.wholesale.getInsights(req.user.id);
   }
 
   // ---- EUP: fixed price lists (per 1000 pcs) ----

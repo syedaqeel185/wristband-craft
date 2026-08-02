@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { Factory, Users, Tags, Truck, LogOut } from "lucide-react";
+import { Factory, Users, Tags, Truck, Wallet, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { clearToken } from "@/lib/api";
@@ -19,6 +19,7 @@ const NAV = [
   { to: "/eup/suppliers", label: "Suppliers", icon: Users },
   { to: "/eup/prices", label: "Price lists", icon: Tags },
   { to: "/eup/freight", label: "Freight", icon: Truck },
+  { to: "/eup/payments", label: "Get paid", icon: Wallet },
 ];
 
 export default function EupLayout({

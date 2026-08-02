@@ -27,9 +27,28 @@ import * as bcrypt from 'bcrypt';
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 
+/**
+ * Which database this run will actually modify. `dotenv/config` silently
+ * defaults to server/.env (local Docker), so state the target before touching
+ * anything — mixing the two up has cost us real time.
+ */
+function describeTarget(): { host: string; isLocal: boolean } {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error('DATABASE_URL is not set. Did you forget DOTENV_CONFIG_PATH?');
+  const host = url.replace(/^\w+:\/\/[^@]*@/, '').replace(/[/?].*$/, '');
+  return { host, isLocal: /^(localhost|127\.0\.0\.1|\[::1\])/.test(host) };
+}
+
 async function main() {
   const email = (process.env.EUP_EMAIL || 'wholesale@euwristbands.com').toLowerCase();
   const newPassword = process.env.NEW_PASSWORD;
+
+  const { host, isLocal } = describeTarget();
+  console.log(`→ target database: ${host}  ${isLocal ? '(LOCAL — not production)' : '(remote)'}`);
+  if (isLocal) {
+    console.log('  If you meant production, re-run with:');
+    console.log('    $env:DOTENV_CONFIG_PATH=".env.vercel.production"');
+  }
 
   if (!newPassword || newPassword.length < 8) {
     throw new Error('Set NEW_PASSWORD to at least 8 characters before running this.');

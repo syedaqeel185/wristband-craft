@@ -1,6 +1,7 @@
 import {
   IsArray,
   IsBoolean,
+  IsEmail,
   IsIn,
   IsInt,
   IsNumber,
@@ -156,6 +157,42 @@ export class UpsertOfferDto {
 export class SetProductionDto {
   @IsBoolean()
   hasOwnProduction: boolean;
+}
+
+/**
+ * Onboard a new supplier straight into this EUP's book. The account is created
+ * with a generated one-time password returned once in the response — EUP never
+ * chooses it, and it is never stored in plaintext or logged.
+ */
+export class CreateEupSupplierDto {
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  @MinLength(2)
+  companyName: string;
+
+  @IsOptional()
+  @IsString()
+  contactName?: string;
+
+  @IsOptional()
+  @IsString()
+  contactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  countryCode?: string;
+
+  /** False when this supplier will buy its stock from EUP rather than produce. */
+  @IsOptional()
+  @IsBoolean()
+  hasOwnProduction?: boolean;
+}
+
+export class SetSupplierStatusDto {
+  @IsIn(['ACTIVE', 'SUSPENDED'])
+  status: string;
 }
 
 /** Freight rows may target one fulfilment mode or apply to both. */

@@ -1294,6 +1294,66 @@ export function getEupBuyers() {
   return apiFetch("/wholesale/me/buyers") as Promise<EupBuyer[]>;
 }
 
+/** Onboard a supplier into EUP's book. `tempPassword` is shown once, never again. */
+export function createEupBuyer(input: {
+  email: string;
+  companyName: string;
+  contactName?: string;
+  contactPhone?: string;
+  countryCode?: string;
+  hasOwnProduction?: boolean;
+}) {
+  return apiFetch("/wholesale/me/buyers", { method: "POST", body: JSON.stringify(input) }) as Promise<{
+    supplier: EupBuyer;
+    tempPassword: string;
+  }>;
+}
+
+export function setEupBuyerStatus(id: string, status: "ACTIVE" | "SUSPENDED") {
+  return apiFetch(`/wholesale/me/buyers/${id}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function setEupBuyerProduction(id: string, hasOwnProduction: boolean) {
+  return apiFetch(`/wholesale/me/buyers/${id}/production`, {
+    method: "PATCH",
+    body: JSON.stringify({ hasOwnProduction }),
+  });
+}
+
+/** Refused with SUPPLIER_HAS_ORDERS when the supplier has any order history. */
+export function deleteEupBuyer(id: string) {
+  return apiFetch(`/wholesale/me/buyers/${id}`, { method: "DELETE" }) as Promise<{ success: boolean }>;
+}
+
+/** What is currently costing EUP sales, plus revenue trend. */
+export interface EupInsights {
+  totals: {
+    buyers: number;
+    activeBuyers: number;
+    dormantBuyers: number;
+    paidRevenue: number;
+    awaitingPaymentValue: number;
+    awaitingPaymentCount: number;
+    overdueCount: number;
+  };
+  unpricedProducts: Array<{ id: string; name: string }>;
+  dormantBuyers: Array<{
+    id: string;
+    companyName: string;
+    contactEmail: string;
+    hasOwnProduction: boolean;
+  }>;
+  months: Array<{ month: string; revenue: number; orders: number }>;
+  topBuyers: Array<{ id: string; companyName: string; spend: number }>;
+}
+
+export function getEupInsights() {
+  return apiFetch("/wholesale/me/insights") as Promise<EupInsights>;
+}
+
 export function getEupPrices() {
   return apiFetch("/wholesale/me/prices") as Promise<EupPrice[]>;
 }

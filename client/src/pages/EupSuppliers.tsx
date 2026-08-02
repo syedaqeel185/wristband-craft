@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Plus, Trash2, Tag, Percent, Info } from "lucide-react";
+import { Loader2, Plus, Trash2, Tag, Percent, Info, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,10 @@ import EupLayout from "@/components/EupLayout";
 import {
   getEupBuyers,
   getEupPrices,
+  createEupBuyer,
+  setEupBuyerStatus,
+  setEupBuyerProduction,
+  deleteEupBuyer,
   getWholesaleInbound,
   getWholesaleDiscounts,
   upsertWholesaleDiscount,
@@ -72,6 +76,36 @@ export default function EupSuppliers() {
     load();
   }, []);
 
+  /** Run a mutation, surface the outcome, refresh. */
+  const act = async (fn: () => Promise<unknown>, success: string) => {
+    try {
+      await fn();
+      toast.success(success);
+      load();
+    } catch (e: any) {
+      toast.error(e.message || "Update failed");
+    }
+  };
+
+  /**
+   * Deleting is refused server-side once a supplier has any order history, so
+   * surface that as guidance rather than letting them discover it as an error.
+   */
+  const remove = async (b: EupBuyer) => {
+    const theirs = orders.filter((o) => o.buyer?.id === b.id).length;
+    const warning = theirs
+      ? `${b.companyName} has ${theirs} order(s) with you. Deleting will be refused — suspend them instead. Try anyway?`
+      : `Delete ${b.companyName}? This removes their account and cannot be undone.`;
+    if (!window.confirm(warning)) return;
+    try {
+      await deleteEupBuyer(b.id);
+      toast.success(`${b.companyName} removed`);
+      load();
+    } catch (e: any) {
+      toast.error(e.message || "Could not delete supplier");
+    }
+  };
+
   const statsFor = (supplierId: string) => {
     const theirs = orders.filter((o) => o.buyer?.id === supplierId);
     const paid = theirs.filter((o) => o.paymentStatus === "paid");
@@ -87,6 +121,8 @@ export default function EupSuppliers() {
       title="Your suppliers"
       description="The suppliers who buy from you. They resell to end customers at their own prices."
     >
+      <InviteSupplier onCreated={load} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Supplier accounts</CardTitle>
@@ -98,8 +134,8 @@ export default function EupSuppliers() {
             </div>
           ) : !buyers.length ? (
             <p className="text-sm text-muted-foreground">
-              No suppliers are buying from you yet. The platform owner assigns suppliers to an EUP from
-              the platform dashboard.
+              No suppliers are buying from you yet. Add one above, or ask the platform owner to assign
+              an existing supplier to you.
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -108,34 +144,67 @@ export default function EupSuppliers() {
                   <TableRow>
                     <TableHead>Company</TableHead>
                     <TableHead>Country</TableHead>
-                    <TableHead>Production</TableHead>
-                    <TableHead className="text-right">Price overrides</TableHead>
+                    <TableHead>Buys from you</TableHead>
+                    <TableHead className="text-right">Overrides</TableHead>
                     <TableHead className="text-right">Orders</TableHead>
                     <TableHead className="text-right">Paid to you</TableHead>
+                    <TableHead>Active</TableHead>
+                    <TableHead className="text-right">Remove</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {buyers.map((b) => {
                     const s = statsFor(b.id);
                     return (
-                      <TableRow key={b.id}>
+                      <TableRow key={b.id} className={b.status === "SUSPENDED" ? "opacity-60" : ""}>
                         <TableCell>
                           <div className="font-medium">{b.companyName}</div>
                           <div className="text-xs text-muted-foreground">{b.contactEmail}</div>
                         </TableCell>
                         <TableCell>{b.countryCode || b.country || "—"}</TableCell>
                         <TableCell>
-                          {b.hasOwnProduction ? (
-                            <Badge variant="outline">Own production</Badge>
-                          ) : (
-                            <Badge className="bg-blue-100 text-blue-800">Buys from you</Badge>
-                          )}
+                          {/* Off = they manufacture in-house and never order from EUP. */}
+                          <Switch
+                            checked={!b.hasOwnProduction}
+                            onCheckedChange={(v) =>
+                              act(
+                                () => setEupBuyerProduction(b.id, !v),
+                                v ? "Now buys stock from you" : "Marked as having own production",
+                              )
+                            }
+                          />
                         </TableCell>
                         <TableCell className="text-right">
                           {s.overrides || <span className="text-muted-foreground">default</span>}
                         </TableCell>
                         <TableCell className="text-right">{s.orderCount}</TableCell>
                         <TableCell className="text-right font-medium">{money2(s.spend)}</TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={b.status !== "SUSPENDED"}
+                            onCheckedChange={(v) =>
+                              act(
+                                () => setEupBuyerStatus(b.id, v ? "ACTIVE" : "SUSPENDED"),
+                                v ? "Reactivated" : "Suspended",
+                              )
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-red-600"
+                            onClick={() => remove(b)}
+                            title={
+                              s.orderCount
+                                ? "Has order history — suspend instead"
+                                : "Delete this supplier"
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -160,6 +229,171 @@ export default function EupSuppliers() {
       <DiscountsEditor discounts={discounts} onChanged={load} />
       <OffersEditor offers={offers} onChanged={load} />
     </EupLayout>
+  );
+}
+
+/**
+ * Onboard a supplier into EUP's book. The server generates the password — EUP
+ * never picks it — and returns it once. There is no way to read it back, so it
+ * stays on screen until dismissed.
+ */
+function InviteSupplier({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [countryCode, setCountryCode] = useState("");
+  const [buysFromYou, setBuysFromYou] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [created, setCreated] = useState<{ company: string; email: string; tempPassword: string } | null>(
+    null,
+  );
+
+  const submit = async () => {
+    if (!email.trim() || !companyName.trim()) {
+      toast.error("Company name and email are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await createEupBuyer({
+        email: email.trim(),
+        companyName: companyName.trim(),
+        contactName: contactName.trim() || undefined,
+        contactPhone: contactPhone.trim() || undefined,
+        countryCode: countryCode.trim() || undefined,
+        hasOwnProduction: !buysFromYou,
+      });
+      setCreated({ company: res.supplier.companyName, email: email.trim(), tempPassword: res.tempPassword });
+      setEmail("");
+      setCompanyName("");
+      setContactName("");
+      setContactPhone("");
+      setCountryCode("");
+      onCreated();
+    } catch (e: any) {
+      toast.error(e.message || "Could not create supplier");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (created) {
+    return (
+      <Card className="border-green-300 bg-green-50">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2 text-green-900">
+            <UserPlus className="h-4 w-4" /> {created.company} added
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <p className="text-green-900">
+            Send them these sign-in details. <span className="font-medium">This password is shown
+            once</span> — it is stored hashed and cannot be retrieved again.
+          </p>
+          <div className="rounded border bg-background p-3 font-mono text-sm space-y-1">
+            <div>{created.email}</div>
+            <div>{created.tempPassword}</div>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard.writeText(`${created.email} / ${created.tempPassword}`);
+                toast.success("Copied");
+              }}
+            >
+              Copy
+            </Button>
+            <Button size="sm" onClick={() => setCreated(null)}>
+              Done
+            </Button>
+          </div>
+          <p className="text-xs text-green-800">
+            Remind them to change it after signing in. Next step: give them a price under{" "}
+            <span className="font-medium">Price lists</span>, or they will not be able to order.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div>
+        <Button size="sm" onClick={() => setOpen(true)}>
+          <UserPlus className="h-4 w-4 mr-1" /> Add a supplier
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <UserPlus className="h-4 w-4 text-primary" /> Add a supplier
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <Label className="text-xs">Company name</Label>
+            <Input
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              placeholder="Funky Gorillas AS"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Sign-in email</Label>
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="post@funkygorillas.no"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Contact name (optional)</Label>
+            <Input value={contactName} onChange={(e) => setContactName(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs">Phone (optional)</Label>
+            <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-xs">Country (ISO-2, optional)</Label>
+            <Input
+              value={countryCode}
+              onChange={(e) => setCountryCode(e.target.value)}
+              placeholder="NO"
+              maxLength={2}
+            />
+          </div>
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <Label className="text-xs">Buys stock from you</Label>
+              <p className="text-xs text-muted-foreground">
+                Off if they manufacture in-house.
+              </p>
+            </div>
+            <Switch checked={buysFromYou} onCheckedChange={setBuysFromYou} />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={submit} disabled={saving}>
+            {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+            Create account
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
